@@ -1,10 +1,9 @@
 <script setup lang="ts">
-import { Head, usePage } from '@inertiajs/vue3';
+import { Head, router, usePage } from '@inertiajs/vue3';
 import Banner from '@/Components/Banner.vue';
 import OrganizationSwitcher from '@/Components/OrganizationSwitcher.vue';
 import CurrentSidebarTimer from '@/Components/CurrentSidebarTimer.vue';
 import {
-    Bars3Icon,
     CalendarIcon,
     ChartBarIcon,
     ClockIcon,
@@ -12,43 +11,55 @@ import {
     CreditCardIcon,
     FolderIcon,
     HomeIcon,
+    MagnifyingGlassIcon,
     TagIcon,
     UserCircleIcon,
     UserGroupIcon,
     XMarkIcon,
     DocumentTextIcon,
+    TableCellsIcon,
 } from '@heroicons/vue/20/solid';
+import { PanelLeft, Target } from '@lucide/vue';
 import NavigationSidebarItem from '@/Components/NavigationSidebarItem.vue';
 import UserSettingsIcon from '@/Components/UserSettingsIcon.vue';
 import MainContainer from '@/packages/ui/src/MainContainer.vue';
-import { computed, onMounted, provide, ref } from 'vue';
+import { computed, nextTick, onMounted, provide, ref } from 'vue';
 import NotificationContainer from '@/Components/NotificationContainer.vue';
-import { initializeStores, refreshStores } from '@/utils/init';
+import { initializeStores } from '@/utils/init';
+import { useCurrentTimeEntryStore } from '@/utils/useCurrentTimeEntry';
 import {
     canManageBilling,
     canUpdateOrganization,
     canViewClients,
+    canViewGoals,
     canViewInvoices,
     canViewMembers,
     canViewProjects,
     canViewReport,
     canViewTags,
 } from '@/utils/permissions';
-import { isBillingActivated, isInvoicingActivated } from '@/utils/billing';
+import { canUseBillableRates, isBillingActivated, isInvoicingActivated } from '@/utils/billing';
+import UpgradeModal from '@/packages/ui/src/UpgradeModal.vue';
+import { billableRatesLockKey } from '@/packages/ui/src/utils/useBillableRatesLock';
+import { upgradeCtaKey } from '@/packages/ui/src/UpgradeModal/useUpgradeCta';
 import type { User } from '@/types/models';
 import { ArrowsRightLeftIcon } from '@heroicons/vue/16/solid';
 import { fetchToken, isTokenValid } from '@/utils/session';
 import UpdateSidebarNotification from '@/Components/UpdateSidebarNotification.vue';
 import BillingBanner from '@/Components/Billing/BillingBanner.vue';
+import SidebarPlanStatus from '@/Components/Billing/SidebarPlanStatus.vue';
 import UserTimezoneMismatchModal from '@/Components/Common/User/UserTimezoneMismatchModal.vue';
 import { useTheme } from '@/utils/theme';
-import { useQuery } from '@tanstack/vue-query';
-import { api } from '@/packages/api/src';
+import { useOrganizationQuery } from '@/utils/useOrganizationQuery';
 import { getCurrentOrganizationId } from '@/utils/useUser';
 import LoadingSpinner from '@/packages/ui/src/LoadingSpinner.vue';
 import { twMerge } from 'tailwind-merge';
-import { Button } from '@/packages/ui/src';
+import { Button } from '@/packages/ui/src/Buttons';
 import { openFeedback } from '@/utils/feedback';
+import { CommandPaletteProvider } from '@/Components/CommandPalette';
+import { useCommandPalette } from '@/utils/useCommandPalette';
+
+const { openPalette } = useCommandPalette();
 
 defineProps({
     title: String,
@@ -56,23 +67,44 @@ defineProps({
 });
 
 const showSidebarMenu = ref(false);
+const sidebarVisible = ref(false);
+
+function openSidebar() {
+    showSidebarMenu.value = true;
+    nextTick(() => {
+        requestAnimationFrame(() => {
+            sidebarVisible.value = true;
+        });
+    });
+}
+
+function closeSidebar() {
+    sidebarVisible.value = false;
+    setTimeout(() => {
+        showSidebarMenu.value = false;
+    }, 200);
+}
+
 const isUnloading = ref(false);
 
-const { data: organization, isLoading: isOrganizationLoading } = useQuery({
-    queryKey: ['organization', getCurrentOrganizationId()],
-    queryFn: () =>
-        api.getOrganization({
-            params: {
-                organization: getCurrentOrganizationId()!,
-            },
-        }),
-    enabled: !!getCurrentOrganizationId(),
+const { organization, isLoading: isOrganizationLoading } = useOrganizationQuery(
+    getCurrentOrganizationId()!
+);
+
+provide('organization', organization);
+
+const showBillableRatesUpgradeModal = ref(false);
+provide(billableRatesLockKey, {
+    locked: computed(() => !canUseBillableRates()),
+    requestUpgrade: () => {
+        showBillableRatesUpgradeModal.value = true;
+    },
 });
 
-provide(
-    'organization',
-    computed(() => organization.value?.data)
-);
+provide(upgradeCtaKey, {
+    canUpgrade: computed(() => isBillingActivated() && canManageBilling()),
+    goToBilling: () => router.visit('/billing'),
+});
 
 onMounted(async () => {
     useTheme();
@@ -89,9 +121,10 @@ onMounted(async () => {
             await fetchToken();
         }
         setTimeout(() => {
-            // prevent store refreshing on navigation
+            // TanStack Query automatically refetches on window focus
+            // Only refresh non-migrated stores
             if (isUnloading.value === false) {
-                refreshStores();
+                useCurrentTimeEntryStore().fetchCurrentTimeEntry();
             }
         }, 100);
     };
@@ -106,15 +139,44 @@ const page = usePage<{
 
 <template>
     <div v-bind="$attrs" class="flex flex-wrap bg-background text-text-secondary">
+        <!-- Mobile sidebar overlay -->
+        <Teleport to="body">
+            <div v-if="showSidebarMenu" class="fixed inset-0 z-40 lg:hidden" @click="closeSidebar">
+                <div
+                    class="absolute inset-0 bg-default-background transition-opacity duration-200"
+                    :class="sidebarVisible ? 'opacity-50' : 'opacity-0'" />
+            </div>
+        </Teleport>
+
         <div
-            :class="{
-                '!flex bg-default-background w-full z-30': showSidebarMenu,
-            }"
-            class="flex-shrink-0 h-screen hidden fixed w-[230px] 2xl:w-[250px] px-2.5 2xl:px-3 py-4 lg:flex flex-col justify-between">
+            :class="[
+                sidebarVisible
+                    ? 'max-lg:translate-x-0 max-lg:shadow-xl'
+                    : 'max-lg:-translate-x-full',
+            ]"
+            class="flex-shrink-0 h-screen fixed w-[280px] px-2.5 py-4 hidden lg:flex flex-col justify-between bg-background border-r border-default-background-separator max-lg:z-50 max-lg:transition-transform max-lg:duration-200 max-lg:ease-in-out lg:w-[230px] lg:border-r-0"
+            :style="showSidebarMenu ? { display: 'flex' } : undefined">
             <div class="flex flex-col h-full">
-                <div class="border-b border-default-background-separator pb-2 flex justify-between">
-                    <OrganizationSwitcher class="w-full"></OrganizationSwitcher>
-                    <XMarkIcon class="w-8 lg:hidden" @click="showSidebarMenu = false"></XMarkIcon>
+                <div
+                    class="border-b border-default-background-separator pb-2 flex items-center gap-1">
+                    <div class="flex-1 min-w-0 overflow-hidden">
+                        <OrganizationSwitcher></OrganizationSwitcher>
+                    </div>
+                    <Button
+                        variant="ghost"
+                        size="icon"
+                        class="h-7 w-7 flex-shrink-0"
+                        data-testid="command_palette_button"
+                        @click="openPalette">
+                        <MagnifyingGlassIcon class="h-4 w-4 text-icon-default" />
+                    </Button>
+                    <Button
+                        variant="ghost"
+                        size="icon"
+                        class="h-7 w-7 flex-shrink-0 lg:hidden"
+                        @click="closeSidebar">
+                        <XMarkIcon class="h-4 w-4 text-icon-default" />
+                    </Button>
                 </div>
                 <div class="border-b border-default-background-separator">
                     <CurrentSidebarTimer></CurrentSidebarTimer>
@@ -143,6 +205,11 @@ const page = usePage<{
                                 :current="route().current('calendar')"
                                 :href="route('calendar')"></NavigationSidebarItem>
                             <NavigationSidebarItem
+                                title="Timesheet"
+                                :icon="TableCellsIcon"
+                                :current="route().current('timesheet')"
+                                :href="route('timesheet')"></NavigationSidebarItem>
+                            <NavigationSidebarItem
                                 title="Reporting"
                                 :icon="ChartBarIcon"
                                 :sub-items="[
@@ -169,6 +236,12 @@ const page = usePage<{
                                 "
                                 :href="route('reporting')">
                             </NavigationSidebarItem>
+                            <NavigationSidebarItem
+                                v-if="canViewGoals()"
+                                title="Goals"
+                                :icon="Target"
+                                :current="route().current('goals')"
+                                :href="route('goals')"></NavigationSidebarItem>
                         </ul>
                     </nav>
 
@@ -204,7 +277,9 @@ const page = usePage<{
                                 v-if="isInvoicingActivated() && canViewInvoices()"
                                 title="Invoices"
                                 :icon="DocumentTextIcon"
-                                :current="route().current('invoices')"
+                                :current="
+                                    route().current('invoices') || route().current('invoices.*')
+                                "
                                 href="/invoices"></NavigationSidebarItem>
                         </ul>
                     </nav>
@@ -231,10 +306,15 @@ const page = usePage<{
                                 v-if="canUpdateOrganization()"
                                 title="Settings"
                                 :icon="Cog6ToothIcon"
-                                :href="route('teams.show', page.props.auth.user.current_team.id)"
+                                :href="
+                                    route(
+                                        'organizations.show',
+                                        page.props.auth.user.current_team.id
+                                    )
+                                "
                                 :current="
                                     route().current(
-                                        'teams.show',
+                                        'organizations.show',
                                         page.props.auth.user.current_team.id
                                     )
                                 "></NavigationSidebarItem>
@@ -243,8 +323,9 @@ const page = usePage<{
                 </div>
                 <div class="justify-self-end">
                     <UpdateSidebarNotification></UpdateSidebarNotification>
+                    <SidebarPlanStatus v-if="isBillingActivated() && canManageBilling()" />
                     <ul
-                        class="border-t border-default-background-separator pt-3 gap-1 pr-2 flex justify-between items-center">
+                        class="border-t border-default-background-separator pt-3 gap-1 flex justify-between items-center">
                         <UserSettingsIcon></UserSettingsIcon>
 
                         <NavigationSidebarItem
@@ -265,15 +346,29 @@ const page = usePage<{
                 </div>
             </div>
         </div>
-        <div class="flex-1 lg:ml-[230px] 2xl:ml-[250px] min-w-0">
+        <div class="flex-1 lg:ml-[230px] min-w-0">
             <div
                 class="h-screen overflow-y-auto flex flex-col bg-default-background border-l border-default-background-separator">
                 <div
                     class="lg:hidden w-full px-3 py-1 border-b border-b-default-background-separator text-text-secondary flex justify-between items-center">
-                    <Bars3Icon
-                        class="w-7 text-text-secondary"
-                        @click="showSidebarMenu = !showSidebarMenu"></Bars3Icon>
-                    <OrganizationSwitcher></OrganizationSwitcher>
+                    <Button
+                        variant="ghost"
+                        size="icon"
+                        class="h-7 w-7 shrink-0"
+                        @click="openSidebar">
+                        <PanelLeft class="h-4 w-4 text-icon-default" />
+                    </Button>
+                    <div class="flex items-center gap-1">
+                        <OrganizationSwitcher></OrganizationSwitcher>
+                        <Button
+                            variant="ghost"
+                            size="icon"
+                            class="h-7 w-7 shrink-0"
+                            data-testid="command_palette_button_mobile"
+                            @click="openPalette">
+                            <MagnifyingGlassIcon class="h-4 w-4 text-icon-default" />
+                        </Button>
+                    </div>
                 </div>
 
                 <Head :title="title" />
@@ -306,4 +401,6 @@ const page = usePage<{
     </div>
     <NotificationContainer></NotificationContainer>
     <UserTimezoneMismatchModal></UserTimezoneMismatchModal>
+    <CommandPaletteProvider></CommandPaletteProvider>
+    <UpgradeModal v-model:show="showBillableRatesUpgradeModal" feature="billable-rates" />
 </template>

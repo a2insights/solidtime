@@ -80,6 +80,36 @@ class ProjectMemberEndpointTest extends ApiEndpointTestAbstract
         $response->assertJsonCount(4, 'data');
     }
 
+    public function test_index_endpoint_returns_project_members_ordered_by_created_at_descending(): void
+    {
+        // Arrange
+        $data = $this->createUserWithPermission([
+            'project-members:view',
+        ]);
+        $project = Project::factory()->forOrganization($data->organization)->create();
+        $pmOldest = ProjectMember::factory()->forProject($project)->create([
+            'created_at' => now()->subDays(3),
+        ]);
+        $pmNewest = ProjectMember::factory()->forProject($project)->create([
+            'created_at' => now()->subDay(),
+        ]);
+        $pmMiddle = ProjectMember::factory()->forProject($project)->create([
+            'created_at' => now()->subDays(2),
+        ]);
+        Passport::actingAs($data->user);
+
+        // Act
+        $response = $this->getJson(route('api.v1.project-members.index', [
+            $data->organization->getKey(),
+            $project->getKey(),
+        ]));
+
+        // Assert
+        $response->assertStatus(200);
+        $ids = collect($response->json('data'))->pluck('id')->values()->toArray();
+        $this->assertSame([$pmNewest->getKey(), $pmMiddle->getKey(), $pmOldest->getKey()], $ids);
+    }
+
     public function test_store_endpoint_fails_if_user_has_no_permission_to_add_members_to_project(): void
     {
         // Arrange
@@ -469,6 +499,42 @@ class ProjectMemberEndpointTest extends ApiEndpointTestAbstract
         $response->assertNoContent();
         $this->assertDatabaseMissing(ProjectMember::class, [
             'id' => $projectMember->getKey(),
+        ]);
+    }
+
+    public function test_project_member_store_and_update_ignore_billable_rate_if_organization_can_not_use_billable_rates(): void
+    {
+        // Arrange
+        $data = $this->createUserWithPermission([
+            'project-members:create',
+            'project-members:update',
+        ]);
+        $project = Project::factory()->forOrganization($data->organization)->create();
+        $otherMember = Member::factory()->forOrganization($data->organization)->forUser(User::factory()->create())->create();
+        $projectMember = ProjectMember::factory()->forProject($project)->forMember($data->member)->create([
+            'billable_rate' => 10000,
+        ]);
+        $this->actAsOrganizationWithoutBillableRates();
+        Passport::actingAs($data->user);
+
+        // Act
+        $responseStore = $this->postJson(route('api.v1.project-members.store', [$data->organization->getKey(), $project->getKey()]), [
+            'member_id' => $otherMember->getKey(),
+            'billable_rate' => 10000,
+        ]);
+        $responseUpdate = $this->putJson(route('api.v1.project-members.update', [$data->organization->getKey(), $projectMember->getKey()]), [
+            'billable_rate' => 20000,
+        ]);
+
+        // Assert
+        $responseStore->assertCreated();
+        $responseStore->assertJsonPath('data.billable_rate', null);
+        $responseUpdate->assertOk();
+        $responseUpdate->assertJsonPath('data.billable_rate', 10000);
+        $this->assertSame(10000, $projectMember->refresh()->billable_rate);
+        $this->assertDatabaseHas(ProjectMember::class, [
+            'member_id' => $otherMember->getKey(),
+            'billable_rate' => null,
         ]);
     }
 }

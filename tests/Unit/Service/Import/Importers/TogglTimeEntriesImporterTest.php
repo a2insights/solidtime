@@ -120,4 +120,68 @@ class TogglTimeEntriesImporterTest extends ImporterTestAbstract
         Queue::assertPushed(RecalculateSpentTimeForProject::class, 2);
         Queue::assertPushed(RecalculateSpentTimeForTask::class, 1);
     }
+
+    public function test_import_fails_if_end_is_before_start(): void
+    {
+        // Arrange
+        $organization = Organization::factory()->create();
+        $timezone = 'Europe/Vienna';
+        $importer = new TogglTimeEntriesImporter;
+        $importer->init($organization);
+        $data = "User,Email,Client,Project,Task,Description,Billable,Start date,Start time,End date,End time,Duration,Tags,Amount (EUR)\n".
+            'Peter Tester,peter.test@email.test,,Project without Client,,"",No,2024-03-04,10:23:52,2024-03-04,09:23:52,-01:00:00,"",';
+
+        // Act
+        try {
+            $importer->importData($data, $timezone);
+        } catch (ImportException $e) {
+            // Assert
+            $this->assertSame('End ("2024-03-04 09:23:52") is before start ("2024-03-04 10:23:52")', $e->getMessage());
+            $this->assertSame(0, TimeEntry::query()->count());
+
+            return;
+        }
+        $this->fail();
+    }
+
+    public function test_import_does_not_set_client_on_time_entry_without_project(): void
+    {
+        // Arrange
+        $organization = Organization::factory()->create();
+        $timezone = 'Europe/Vienna';
+        $importer = new TogglTimeEntriesImporter;
+        $importer->init($organization);
+        $data = "User,Email,Client,Project,Task,Description,Billable,Start date,Start time,End date,End time,Duration,Tags,Amount (EUR)\n".
+            'Peter Tester,peter.test@email.test,Big Company,,,"",No,2024-03-04,10:23:52,2024-03-04,11:23:52,01:00:00,"",';
+
+        // Act
+        $importer->importData($data, $timezone);
+
+        // Assert
+        $timeEntry = TimeEntry::query()->sole();
+        $this->assertNull($timeEntry->project_id);
+        $this->assertNull($timeEntry->client_id);
+    }
+
+    public function test_import_drops_billable_flags_and_rates_if_organization_can_not_use_billable_rates(): void
+    {
+        // Arrange
+        $this->actAsOrganizationWithoutBillableRates();
+        $organization = Organization::factory()->create();
+        $timezone = 'Europe/Vienna';
+        $importer = new TogglTimeEntriesImporter;
+        $importer->init($organization);
+        $data = Storage::disk('testfiles')->get('toggl_time_entries_import_test_1.csv');
+
+        // Act
+        $importer->importData($data, $timezone);
+
+        // Assert
+        $timeEntries = TimeEntry::query()->whereBelongsTo($organization, 'organization')->get();
+        $this->assertCount(2, $timeEntries);
+        foreach ($timeEntries as $timeEntry) {
+            $this->assertFalse($timeEntry->billable);
+            $this->assertNull($timeEntry->billable_rate);
+        }
+    }
 }

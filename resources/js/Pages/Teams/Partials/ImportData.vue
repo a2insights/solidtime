@@ -3,9 +3,14 @@ import PrimaryButton from '@/packages/ui/src/Buttons/PrimaryButton.vue';
 import { computed, onMounted, ref } from 'vue';
 import { useNotificationsStore } from '@/utils/notification';
 import { api } from '@/packages/api/src';
-import InputLabel from '@/packages/ui/src/Input/InputLabel.vue';
+import { Field, FieldLabel } from '@/packages/ui/src/field';
 import { DocumentIcon } from '@heroicons/vue/24/solid';
-import { ArrowDownOnSquareIcon, InformationCircleIcon } from '@heroicons/vue/24/outline';
+import {
+    ArrowDownOnSquareIcon,
+    ExclamationTriangleIcon,
+    InformationCircleIcon,
+} from '@heroicons/vue/24/outline';
+import { canUseBillableRates } from '@/utils/billing';
 
 import { getCurrentOrganizationId } from '@/utils/useUser';
 import type { ImportReport, ImportType } from '@/packages/api/src';
@@ -20,6 +25,8 @@ const importTypeOptions = ref<ImportType[]>([]);
 const { addNotification } = useNotificationsStore();
 
 const loading = ref(false);
+
+const billableRatesLocked = computed(() => !canUseBillableRates());
 
 onMounted(async () => {
     const organizationId = getCurrentOrganizationId();
@@ -46,8 +53,8 @@ async function importData() {
         addNotification('error', 'Please select the CSV or ZIP file that you want to import');
         return;
     }
-    const rawBase64String = await toBase64(files.value[0]);
-    const base64String = rawBase64String.split(';')[1].replace('base64,', '') as string;
+    const rawBase64String = await toBase64(files.value[0]!);
+    const base64String = rawBase64String.split(';')[1]!.replace('base64,', '') as string;
     const organizationId = getCurrentOrganizationId();
     if (organizationId !== null) {
         const { handleApiRequestNotifications } = useNotificationsStore();
@@ -155,21 +162,32 @@ const showResultModal = ref(false);
             <div class="py-2 px-3 sm:px-4 text-sm flex items-center space-x-3">
                 <InformationCircleIcon class="h-5 min-w-0 w-5 text-bg-tertiary" />
                 <p class="flex-1">
-                    Import existing data from Toggl, Clockify or a different solidtime instance.
-                    Please select the type of data you want to import and follow the instructions.
+                    Import existing data from Toggl, Clockify, Harvest, generic CSV files or a
+                    different solidtime instance. Please select the type of data you want to import
+                    and follow the instructions.
+                </p>
+            </div>
+            <div
+                v-if="billableRatesLocked"
+                class="py-2 px-3 sm:px-4 text-sm flex items-center space-x-3 border-t border-card-background-separator">
+                <ExclamationTriangleIcon class="h-5 min-w-0 w-5 text-yellow-500" />
+                <p class="flex-1">
+                    Billable rates and billable status will not be imported, since they are not
+                    available in the free plan. All projects and time entries will be imported as
+                    non-billable.
                 </p>
             </div>
         </Card>
 
         <Card>
             <div class="px-4 py-5 sm:px-5">
-                <div>
-                    <InputLabel for="importType" value="Import Type" />
+                <Field>
+                    <FieldLabel for="importType">Import Type</FieldLabel>
                     <select
                         id="importType"
                         v-model="importType"
                         name="importType"
-                        class="mt-1 block w-full border-input-border bg-input-background text-text-primary focus:border-input-border-active rounded-md shadow-sm">
+                        class="block w-full border-input-border bg-input-background text-text-primary focus:border-input-border-active rounded-md shadow-sm">
                         <option :value="null" selected disabled>
                             Select an import type to get instructions...
                         </option>
@@ -184,7 +202,7 @@ const showResultModal = ref(false);
                         <div class="font-semibold text-text-secondary py-1">Instructions:</div>
                         <div class="max-w-2xl" v-html="currentImporterDescription"></div>
                     </div>
-                </div>
+                </Field>
 
                 <div
                     class="mt-2 flex justify-center rounded-lg border border-dashed border-border-primary px-6 py-10">
@@ -198,7 +216,7 @@ const showResultModal = ref(false);
                                 for="file-upload"
                                 class="relative cursor-pointer rounded-md font-semibold text-text-primary focus-within:outline-none focus-within:ring-2 focus-within:ring-indigo-600 focus-within:ring-offset-2 focus-within:ring-offset-gray-900 hover:text-indigo-500">
                                 <span v-if="files">{{ filenames }}</span>
-                                <span v-else>Upload a Toggl/Clockify Export</span>
+                                <span v-else>Upload the Export file</span>
                                 <input
                                     id="file-upload"
                                     ref="importFile"

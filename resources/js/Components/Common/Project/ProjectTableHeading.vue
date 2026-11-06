@@ -1,27 +1,65 @@
 <script setup lang="ts">
+import { computed } from 'vue';
 import TableHeading from '@/Components/Common/TableHeading.vue';
-defineProps<{
+import SortableTableHeaderCell from '@/Components/Common/SortableTableHeaderCell.vue';
+import type { SortColumn, SortDirection } from '@/Components/Common/Project/ProjectTable.vue';
+
+const props = defineProps<{
     showBillableRate: boolean;
+    sortColumn: SortColumn;
+    sortDirection: SortDirection;
+    descFirstColumns: ReadonlySet<SortColumn>;
 }>();
+
+const emit = defineEmits<{
+    sort: [column: SortColumn];
+}>();
+
+// Bound once per cell instead of repeating the three sort props on every column.
+const sortState = computed(() => ({
+    sortColumn: props.sortColumn,
+    sortDirection: props.sortDirection,
+    descFirstColumns: props.descFirstColumns,
+}));
+
+function handleSort(column: SortColumn) {
+    emit('sort', column);
+}
 </script>
 
 <template>
     <TableHeading>
-        <div
-            class="py-1.5 pr-3 text-left font-semibold text-text-primary pl-4 sm:pl-6 lg:pl-8 3xl:pl-12">
+        <SortableTableHeaderCell
+            class="pr-3 pl-2 sm:pl-4 lg:pl-6"
+            column="name"
+            v-bind="sortState"
+            @sort="handleSort">
             Name
-        </div>
-        <div class="px-3 py-1.5 text-left font-semibold text-text-primary">Client</div>
-        <div class="px-3 py-1.5 text-left font-semibold text-text-primary">Total Time</div>
-        <div class="px-3 py-1.5 text-left font-semibold text-text-primary">Progress</div>
-        <div v-if="showBillableRate" class="px-3 py-1.5 text-left font-semibold text-text-primary">
+        </SortableTableHeaderCell>
+        <SortableTableHeaderCell column="client_name" v-bind="sortState" @sort="handleSort">
+            Client
+        </SortableTableHeaderCell>
+        <SortableTableHeaderCell column="spent_time" v-bind="sortState" @sort="handleSort">
+            Total Time
+        </SortableTableHeaderCell>
+        <SortableTableHeaderCell column="progress" v-bind="sortState" @sort="handleSort">
+            Progress
+        </SortableTableHeaderCell>
+        <SortableTableHeaderCell
+            v-if="showBillableRate"
+            column="billable_rate"
+            v-bind="sortState"
+            @sort="handleSort">
             Billable Rate
-        </div>
-        <div class="px-3 py-1.5 text-left font-semibold text-text-primary">Status</div>
-        <div class="relative py-1.5 pl-3 pr-4 sm:pr-6 lg:pr-8 3xl:pr-12">
+        </SortableTableHeaderCell>
+        <SortableTableHeaderCell column="status" v-bind="sortState" @sort="handleSort">
+            Status
+        </SortableTableHeaderCell>
+        <SortableTableHeaderCell column="visibility" v-bind="sortState" @sort="handleSort">
+            Visibility
+        </SortableTableHeaderCell>
+        <div class="relative py-1.5 pl-3 pr-2 sm:pr-4 lg:pr-6">
             <span class="sr-only">Edit</span>
         </div>
     </TableHeading>
 </template>
-
-<style scoped></style>

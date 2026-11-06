@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Service;
 
+use App\Enums\TimeEntryType;
 use App\Enums\Weekday;
 use App\Models\Organization;
 use App\Models\Project;
@@ -15,6 +16,7 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
+use RuntimeException;
 
 class DashboardService
 {
@@ -100,7 +102,7 @@ class DashboardService
         $value1 = Carbon::createFromFormat('Y-m-d', $possibleDates->first(), $timeZone);
         $value2 = Carbon::createFromFormat('Y-m-d', $possibleDates->last(), $timeZone);
         if ($value2 === null || $value1 === null) {
-            throw new \RuntimeException('Provided date is not valid');
+            throw new RuntimeException('Provided date is not valid');
         }
         if ($value1->gt($value2)) {
             $last = $value1;
@@ -138,23 +140,17 @@ class DashboardService
     public function getDailyTrackedHours(User $user, Organization $organization, int $days): array
     {
         $timezone = $this->timezoneService->getTimezoneFromUser($user);
-        $timezoneShift = $this->timezoneService->getShiftFromUtc($timezone);
-
-        if ($timezoneShift > 0) {
-            $dateWithTimeZone = 'start + INTERVAL \''.$timezoneShift.' second\'';
-        } elseif ($timezoneShift < 0) {
-            $dateWithTimeZone = 'start - INTERVAL \''.abs($timezoneShift).' second\'';
-        } else {
-            $dateWithTimeZone = 'start';
-        }
+        $dateWithTimeZone = $this->timezoneService->getLocalDateTimeSqlExpression('start', $timezone);
 
         $possibleDays = $this->lastDays($days, $timezone);
 
+        // Note: GROUP BY must use the alias, since the bound expressions would not be recognized as identical by PostgreSQL.
         $query = TimeEntry::query()
-            ->select(DB::raw('DATE('.$dateWithTimeZone.') as date, round(sum(extract(epoch from (coalesce("end", now()) - start)))) as aggregate'))
+            ->selectRaw('DATE('.$dateWithTimeZone['sql'].') as date, round(sum(extract(epoch from (coalesce("end", now()) - start)))) as aggregate', $dateWithTimeZone['bindings'])
             ->where('user_id', '=', $user->getKey())
             ->where('organization_id', '=', $organization->getKey())
-            ->groupBy(DB::raw('DATE('.$dateWithTimeZone.')'))
+            ->workTime()
+            ->groupBy('date')
             ->orderBy('date');
 
         $query = $this->constrainDateByPossibleDates($query, $possibleDays, $timezone);
@@ -181,21 +177,16 @@ class DashboardService
     public function getWeeklyHistory(User $user, Organization $organization): array
     {
         $timezone = $this->timezoneService->getTimezoneFromUser($user);
-        $timezoneShift = $this->timezoneService->getShiftFromUtc($timezone);
-        if ($timezoneShift > 0) {
-            $dateWithTimeZone = 'start + INTERVAL \''.$timezoneShift.' second\'';
-        } elseif ($timezoneShift < 0) {
-            $dateWithTimeZone = 'start - INTERVAL \''.abs($timezoneShift).' second\'';
-        } else {
-            $dateWithTimeZone = 'start';
-        }
+        $dateWithTimeZone = $this->timezoneService->getLocalDateTimeSqlExpression('start', $timezone);
         $possibleDays = $this->daysOfThisWeek($timezone, $user->week_start);
 
+        // Note: GROUP BY must use the alias, since the bound expressions would not be recognized as identical by PostgreSQL.
         $query = TimeEntry::query()
-            ->select(DB::raw('DATE('.$dateWithTimeZone.') as date, round(sum(extract(epoch from (coalesce("end", now()) - start)))) as aggregate'))
+            ->selectRaw('DATE('.$dateWithTimeZone['sql'].') as date, round(sum(extract(epoch from (coalesce("end", now()) - start)))) as aggregate', $dateWithTimeZone['bindings'])
             ->where('user_id', '=', $user->getKey())
             ->where('organization_id', '=', $organization->getKey())
-            ->groupBy(DB::raw('DATE('.$dateWithTimeZone.')'))
+            ->workTime()
+            ->groupBy('date')
             ->orderBy('date');
 
         $query = $this->constrainDateByPossibleDates($query, $possibleDays, $timezone);
@@ -222,7 +213,8 @@ class DashboardService
         $query = TimeEntry::query()
             ->select(DB::raw('round(sum(extract(epoch from (coalesce("end", now()) - start)))) as aggregate'))
             ->where('user_id', '=', $user->getKey())
-            ->where('organization_id', '=', $organization->getKey());
+            ->where('organization_id', '=', $organization->getKey())
+            ->workTime();
 
         $query = $this->constrainDateByPossibleDates($query, $possibleDays, $timezone);
         /** @var Collection<int, object{aggregate: int}> $resultDb */
@@ -290,6 +282,7 @@ class DashboardService
             ->select(DB::raw('project_id, round(sum(extract(epoch from (coalesce("end", now()) - start)))) as aggregate'))
             ->where('user_id', '=', $user->getKey())
             ->where('organization_id', '=', $organization->getKey())
+            ->workTime()
             ->groupBy('project_id');
 
         $query = $this->constrainDateByCurrentWeek($query, $timezone, $user->week_start);
@@ -433,7 +426,8 @@ class DashboardService
             JOIN   time_entries ON time_entries.start < time_ranges."end"
                       AND coalesce(time_entries."end", :now::timestamp) > time_ranges.start
             WHERE time_entries.user_id = :user_id and
-                  time_entries.organization_id = :organization_id
+                  time_entries.organization_id = :organization_id and
+                  time_entries.type = :work_type
             GROUP BY time_ranges.start
             ORDER BY time_ranges.start
         ', [
@@ -442,6 +436,7 @@ class DashboardService
             'user_id' => $user->getKey(),
             'organization_id' => $organization->getKey(),
             'now' => Carbon::now()->toDateTimeString(),
+            'work_type' => TimeEntryType::Work->value,
         ]))->pluck('aggregate', 'start');
 
         $response = [];

@@ -2,7 +2,7 @@
 import FormSection from '@/Components/FormSection.vue';
 import PrimaryButton from '@/packages/ui/src/Buttons/PrimaryButton.vue';
 import { onMounted, ref } from 'vue';
-import InputLabel from '@/packages/ui/src/Input/InputLabel.vue';
+import { Field, FieldLabel } from '@/packages/ui/src/field';
 import type { UpdateOrganizationBody } from '@/packages/api/src';
 import BillableRateInput from '@/packages/ui/src/Input/BillableRateInput.vue';
 import { useOrganizationStore } from '@/utils/useOrganization';
@@ -10,10 +10,12 @@ import { storeToRefs } from 'pinia';
 import OrganizationBillableRateModal from '@/Components/Common/Organization/OrganizationBillableRateModal.vue';
 import { getOrganizationCurrencyString } from '@/utils/money';
 import { Checkbox } from '@/packages/ui/src';
+import { useBillableRatesLock } from '@/packages/ui/src/utils/useBillableRatesLock';
 
 const store = useOrganizationStore();
 const { fetchOrganization, updateOrganization } = store;
 const { organization } = storeToRefs(store);
+const { locked: billableRatesLocked, requestUpgrade } = useBillableRatesLock();
 const saving = ref(false);
 const organizationBody = ref<UpdateOrganizationBody>({
     name: '',
@@ -61,39 +63,33 @@ function checkForConfirmationModal() {
                 v-model:show="showConfirmationModal"
                 :new-billable-rate="organizationBody.billable_rate"
                 @submit="submit"></OrganizationBillableRateModal>
-            <!-- Organization Owner Information -->
-            <div class="col-span-6">
-                <div class="col-span-6 sm:col-span-4">
-                    <InputLabel
-                        for="organizationBillableRate"
-                        class="mb-2"
-                        value="Organization Billable Rate" />
-                    <BillableRateInput
-                        v-if="organization"
-                        v-model="organizationBody.billable_rate"
-                        :currency="getOrganizationCurrencyString()"
-                        name="organizationBillableRate"></BillableRateInput>
-                </div>
-            </div>
+            <Field class="col-span-6 sm:col-span-4">
+                <FieldLabel for="organizationBillableRate">Organization Billable Rate</FieldLabel>
+                <BillableRateInput
+                    v-if="organization"
+                    v-model="organizationBody.billable_rate"
+                    :currency="getOrganizationCurrencyString()"
+                    name="organizationBillableRate"></BillableRateInput>
+            </Field>
 
-            <div class="col-span-6">
-                <div class="col-span-6 sm:col-span-4">
-                    <div class="flex items-center space-x-2">
-                        <Checkbox
-                            v-if="organization"
-                            id="organizationShowBillableRatesToEmployees"
-                            v-model:checked="
-                                organizationBody.employees_can_see_billable_rates
-                            "></Checkbox>
-                        <InputLabel
-                            for="organizationShowBillableRatesToEmployees"
-                            value="Show Billable Rates to Employees" />
-                    </div>
-                </div>
+            <div class="col-span-6 sm:col-span-4">
+                <Field orientation="horizontal">
+                    <Checkbox
+                        v-if="organization"
+                        id="organizationShowBillableRatesToEmployees"
+                        v-model:checked="organizationBody.employees_can_see_billable_rates"
+                        :disabled="billableRatesLocked"></Checkbox>
+                    <FieldLabel for="organizationShowBillableRatesToEmployees"
+                        >Show Billable Rates to Employees</FieldLabel
+                    >
+                </Field>
             </div>
         </template>
         <template #actions>
-            <PrimaryButton @click="checkForConfirmationModal">Save</PrimaryButton>
+            <PrimaryButton v-if="billableRatesLocked" @click="requestUpgrade"
+                >Upgrade</PrimaryButton
+            >
+            <PrimaryButton v-else @click="checkForConfirmationModal">Save</PrimaryButton>
         </template>
     </FormSection>
 </template>

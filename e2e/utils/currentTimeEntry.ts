@@ -1,18 +1,36 @@
-import { expect, Page } from '@playwright/test';
+import { expect } from '@playwright/test';
+import type { Page } from '@playwright/test';
 
 export async function startOrStopTimerWithButton(page: Page) {
-    await page.locator('[data-testid="dashboard_timer"] [data-testid="timer_button"]').click();
+    await page
+        .getByTestId('dashboard_timer')
+        .getByTestId('timer_button')
+        .and(page.locator(':visible'))
+        .click();
 }
 
 export async function assertThatTimerHasStarted(page: Page) {
-    await page.locator(
-        '[data-testid="dashboard_timer"] [data-testid="timer_button"].bg-red-400/80'
-    );
+    await expect(
+        page
+            .getByTestId('dashboard_timer')
+            .getByTestId('timer_button')
+            .and(page.locator(':visible'))
+    ).toHaveClass(/bg-red-400\/80/);
 }
 
 export function newTimeEntryResponse(
     page: Page,
-    { description = '', status = 201, tags = [] } = {}
+    {
+        description = '',
+        status = 201,
+        tags = [],
+        type,
+    }: {
+        description?: string;
+        status?: number;
+        tags?: string[];
+        type?: 'work' | 'break';
+    } = {}
 ) {
     return page.waitForResponse(async (response) => {
         return (
@@ -26,6 +44,7 @@ export function newTimeEntryResponse(
             (await response.json()).data.description === description &&
             (await response.json()).data.task_id === null &&
             (await response.json()).data.user_id !== null &&
+            (type === undefined || (await response.json()).data.type === type) &&
             JSON.stringify((await response.json()).data.tags) === JSON.stringify(tags)
         );
     });
@@ -33,11 +52,25 @@ export function newTimeEntryResponse(
 
 export async function assertThatTimerIsStopped(page: Page) {
     await expect(
-        page.locator('[data-testid="dashboard_timer"] [data-testid="timer_button"]')
+        page
+            .getByTestId('dashboard_timer')
+            .getByTestId('timer_button')
+            .and(page.locator(':visible'))
     ).toHaveClass(/bg-accent-300\/70/);
 }
 
-export async function stoppedTimeEntryResponse(page: Page, { description = '', tags = [] } = {}) {
+export async function stoppedTimeEntryResponse(
+    page: Page,
+    {
+        description = '',
+        tags = [],
+        type,
+    }: {
+        description?: string;
+        tags?: string[];
+        type?: 'work' | 'break';
+    } = {}
+) {
     return page.waitForResponse(async (response) => {
         return (
             response.status() === 200 &&
@@ -51,6 +84,7 @@ export async function stoppedTimeEntryResponse(page: Page, { description = '', t
             (await response.json()).data.task_id === null &&
             (await response.json()).data.duration !== null &&
             (await response.json()).data.user_id !== null &&
+            (type === undefined || (await response.json()).data.type === type) &&
             JSON.stringify((await response.json()).data.tags) === JSON.stringify(tags)
         );
     });

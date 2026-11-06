@@ -2,7 +2,7 @@
 <html lang="{{ str_replace('_', '-', app()->getLocale()) }}">
     <head>
         <meta charset="utf-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
 
         <title inertia>{{ config('app.name', 'Laravel') }}</title>
 
@@ -19,7 +19,7 @@
 
         <!-- Scripts -->
         @routes
-        @vite(array_filter(\Nwidart\Modules\Module::getAssets(), fn($asset) => $asset !== 'resources/css/filament/admin/theme.css'))
+        @vite(\Nwidart\Modules\Module::getAssets())
         @inertiaHead
     </head>
     <body class="font-sans antialiased">

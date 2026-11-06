@@ -1,40 +1,55 @@
 <script setup lang="ts">
 import { ref } from 'vue';
-import { useForm } from '@inertiajs/vue3';
 import ActionSection from '@/Components/ActionSection.vue';
 import DangerButton from '@/packages/ui/src/Buttons/DangerButton.vue';
 import DialogModal from '@/packages/ui/src/DialogModal.vue';
-import InputError from '@/packages/ui/src/Input/InputError.vue';
+import { Field, FieldError } from '@/packages/ui/src/field';
 import SecondaryButton from '@/packages/ui/src/Buttons/SecondaryButton.vue';
 import TextInput from '@/packages/ui/src/Input/TextInput.vue';
+import { useDeleteUserMutation } from '@/utils/useUserQuery';
+import { getCurrentUserId } from '@/utils/useUser';
+
+const deleteUserMutation = useDeleteUserMutation();
 
 const confirmingUserDeletion = ref(false);
-const passwordInput = ref<HTMLElement | null>(null);
+const passwordInput = ref<HTMLInputElement | null>(null);
+const password = ref('');
+const passwordError = ref('');
+const processing = ref(false);
 
-const form = useForm({
-    password: '',
-});
-
-const confirmUserDeletion = () => {
+function confirmUserDeletion() {
     confirmingUserDeletion.value = true;
-
     setTimeout(() => passwordInput.value?.focus(), 250);
-};
+}
 
-const deleteUser = () => {
-    form.delete(route('current-user.destroy'), {
-        preserveScroll: true,
-        onSuccess: () => closeModal(),
-        onError: () => passwordInput.value?.focus(),
-        onFinish: () => form.reset(),
-    });
-};
+async function deleteUser() {
+    if (processing.value) return;
+    processing.value = true;
+    passwordError.value = '';
+    try {
+        await deleteUserMutation.mutateAsync({
+            userId: getCurrentUserId(),
+            body: { password: password.value },
+        });
+        window.location.href = '/';
+    } catch (error) {
+        if (error && typeof error === 'object' && 'response' in error) {
+            const response = error.response as
+                { status?: number; data?: { errors?: { password?: string[] } } } | undefined;
+            if (response?.status === 422) {
+                passwordError.value = response.data?.errors?.password?.[0] ?? 'Invalid password.';
+            }
+        }
+        processing.value = false;
+        passwordInput.value?.focus();
+    }
+}
 
-const closeModal = () => {
+function closeModal() {
     confirmingUserDeletion.value = false;
-
-    form.reset();
-};
+    password.value = '';
+    passwordError.value = '';
+}
 </script>
 
 <template>
@@ -63,18 +78,18 @@ const closeModal = () => {
                     of its resources and data will be permanently deleted. Please enter your
                     password to confirm you would like to permanently delete your account.
 
-                    <div class="mt-4">
+                    <Field class="mt-4">
                         <TextInput
                             ref="passwordInput"
-                            v-model="form.password"
+                            v-model="password"
                             type="password"
-                            class="mt-1 block w-3/4"
+                            class="block w-3/4"
                             placeholder="Password"
                             autocomplete="current-password"
                             @keyup.enter="deleteUser" />
 
-                        <InputError :message="form.errors.password" class="mt-2" />
-                    </div>
+                        <FieldError v-if="passwordError">{{ passwordError }}</FieldError>
+                    </Field>
                 </template>
 
                 <template #footer>
@@ -82,8 +97,8 @@ const closeModal = () => {
 
                     <DangerButton
                         class="ms-3"
-                        :class="{ 'opacity-25': form.processing }"
-                        :disabled="form.processing"
+                        :class="{ 'opacity-25': processing }"
+                        :disabled="processing"
                         @click="deleteUser">
                         Delete Account
                     </DangerButton>

@@ -4,33 +4,40 @@ declare(strict_types=1);
 
 namespace App\Filament\Resources;
 
-use App\Filament\Resources\TimeEntryResource\Pages;
+use App\Filament\Resources\TimeEntryResource\Pages\CreateTimeEntry;
+use App\Filament\Resources\TimeEntryResource\Pages\EditTimeEntry;
+use App\Filament\Resources\TimeEntryResource\Pages\ListTimeEntries;
+use App\Models\Member;
+use App\Models\Project;
 use App\Models\TimeEntry;
+use Filament\Actions\BulkActionGroup;
+use Filament\Actions\DeleteBulkAction;
+use Filament\Actions\EditAction;
 use Filament\Forms\Components\DateTimePicker;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\Toggle;
-use Filament\Forms\Form;
 use Filament\Resources\Resource;
-use Filament\Tables;
+use Filament\Schemas\Schema;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Filters\SelectFilter;
 use Filament\Tables\Table;
+use Illuminate\Database\Eloquent\Builder;
 
 class TimeEntryResource extends Resource
 {
     protected static ?string $model = TimeEntry::class;
 
-    protected static ?string $navigationIcon = 'heroicon-o-clock';
+    protected static string|\BackedEnum|null $navigationIcon = 'heroicon-o-clock';
 
-    protected static ?string $navigationGroup = 'Timetracking';
+    protected static string|\UnitEnum|null $navigationGroup = 'Timetracking';
 
     protected static ?int $navigationSort = 1;
 
-    public static function form(Form $form): Form
+    public static function form(Schema $schema): Schema
     {
-        return $form
-            ->schema([
+        return $schema
+            ->components([
                 TextInput::make('id')
                     ->label('ID')
                     ->readOnly()
@@ -51,15 +58,23 @@ class TimeEntryResource extends Resource
                     ->rules([
                         'after_or_equal:start',
                     ]),
-                Select::make('user_id')
-                    ->relationship(name: 'user', titleAttribute: 'email')
-                    ->searchable(['name', 'email'])
+                Select::make('member_id')
+                    ->relationship(
+                        name: 'member',
+                        titleAttribute: 'id',
+                        modifyQueryUsing: fn (Builder $query) => $query->with(['user', 'organization'])
+                    )
+                    ->getOptionLabelFromRecordUsing(fn (Member $record): string => $record->user->email.' ('.$record->organization->name.')')
+                    ->searchable()
                     ->required(),
                 Select::make('project_id')
                     ->relationship(name: 'project', titleAttribute: 'name')
                     ->searchable(['name'])
                     ->nullable(),
-                // TODO
+                Select::make('task_id')
+                    ->relationship(name: 'task', titleAttribute: 'name')
+                    ->searchable(['name'])
+                    ->nullable(),
             ]);
     }
 
@@ -83,11 +98,11 @@ class TimeEntryResource extends Resource
                             ($record->end?->toDateTimeString('minute') ?? '...').')';
                     })
                     ->label('Time'),
-                Tables\Columns\TextColumn::make('organization.name')
+                TextColumn::make('organization.name')
                     ->sortable(),
-                Tables\Columns\TextColumn::make('created_at')
+                TextColumn::make('created_at')
                     ->sortable(),
-                Tables\Columns\TextColumn::make('updated_at')
+                TextColumn::make('updated_at')
                     ->sortable(),
             ])
             ->filters([
@@ -101,12 +116,12 @@ class TimeEntryResource extends Resource
                     ->searchable(),
             ])
             ->defaultSort('created_at', 'desc')
-            ->actions([
-                Tables\Actions\EditAction::make(),
+            ->recordActions([
+                EditAction::make(),
             ])
-            ->bulkActions([
-                Tables\Actions\BulkActionGroup::make([
-                    Tables\Actions\DeleteBulkAction::make(),
+            ->toolbarActions([
+                BulkActionGroup::make([
+                    DeleteBulkAction::make(),
                 ]),
             ]);
     }
@@ -118,12 +133,26 @@ class TimeEntryResource extends Resource
         ];
     }
 
+    /**
+     * The client of a time entry is always the client of its project.
+     */
+    public static function getClientIdForProject(mixed $projectId): ?string
+    {
+        if ($projectId === null || $projectId === '') {
+            return null;
+        }
+        /** @var Project|null $project */
+        $project = Project::query()->find($projectId);
+
+        return $project?->client_id;
+    }
+
     public static function getPages(): array
     {
         return [
-            'index' => Pages\ListTimeEntries::route('/'),
-            'create' => Pages\CreateTimeEntry::route('/create'),
-            'edit' => Pages\EditTimeEntry::route('/{record}/edit'),
+            'index' => ListTimeEntries::route('/'),
+            'create' => CreateTimeEntry::route('/create'),
+            'edit' => EditTimeEntry::route('/{record}/edit'),
         ];
     }
 }

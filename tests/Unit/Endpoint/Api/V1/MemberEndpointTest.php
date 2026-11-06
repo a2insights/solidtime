@@ -52,6 +52,38 @@ class MemberEndpointTest extends ApiEndpointTestAbstract
         $response->assertStatus(200);
     }
 
+    public function test_index_returns_members_ordered_by_created_at_descending(): void
+    {
+        // Arrange
+        $data = $this->createUserWithPermission([
+            'members:view',
+        ]);
+        $memberOldest = Member::factory()->forOrganization($data->organization)->create([
+            'created_at' => now()->subDays(3),
+        ]);
+        $memberNewest = Member::factory()->forOrganization($data->organization)->create([
+            'created_at' => now()->subDay(),
+        ]);
+        $memberMiddle = Member::factory()->forOrganization($data->organization)->create([
+            'created_at' => now()->subDays(2),
+        ]);
+        Passport::actingAs($data->user);
+
+        // Act
+        $response = $this->getJson(route('api.v1.members.index', $data->organization->getKey()));
+
+        // Assert
+        $response->assertStatus(200);
+        $ids = collect($response->json('data'))->pluck('id')->values()->toArray();
+        // Verify that the three explicitly created members appear in newest-first order
+        $createdMemberIds = array_values(array_filter($ids, fn ($id) => in_array($id, [
+            $memberOldest->getKey(),
+            $memberNewest->getKey(),
+            $memberMiddle->getKey(),
+        ], true)));
+        $this->assertSame([$memberNewest->getKey(), $memberMiddle->getKey(), $memberOldest->getKey()], $createdMemberIds);
+    }
+
     public function test_update_member_fails_if_user_has_no_permission_to_update_members(): void
     {
         // Arrange
@@ -356,6 +388,40 @@ class MemberEndpointTest extends ApiEndpointTestAbstract
             'member_id' => $memberDestination->getKey(),
             'user_id' => $userDestination->getKey(),
         ]);
+    }
+
+    public function test_merge_into_deletes_running_time_entries_of_source_member(): void
+    {
+        // Arrange
+        $data = $this->createUserWithPermission([
+            'members:merge-into',
+        ]);
+        $userSource = User::factory()->placeholder()->create();
+        $memberSource = Member::factory()->forUser($userSource)->forOrganization($data->organization)->role(Role::Placeholder)->create();
+        $runningTimeEntrySource = TimeEntry::factory()->forOrganization($data->organization)->forMember($memberSource)->active()->create();
+        TimeEntry::factory()->forOrganization($data->organization)->forMember($memberSource)->createMany(2);
+
+        $userDestination = User::factory()->create();
+        $memberDestination = Member::factory()->forUser($userDestination)->forOrganization($data->organization)->role(Role::Admin)->create();
+        $runningTimeEntryDestination = TimeEntry::factory()->forOrganization($data->organization)->forMember($memberDestination)->active()->create();
+        Passport::actingAs($data->user);
+
+        // Act
+        $response = $this->postJson(route('api.v1.members.merge-into', [$data->organization->getKey(), $memberSource->getKey()]), [
+            'member_id' => $memberDestination->getKey(),
+        ]);
+
+        // Assert
+        $response->assertStatus(204);
+        $this->assertDatabaseMissing(Member::class, [
+            'id' => $memberSource->getKey(),
+        ]);
+        $this->assertDatabaseMissing(TimeEntry::class, [
+            'id' => $runningTimeEntrySource->getKey(),
+        ]);
+        $memberDestination->refresh();
+        $this->assertCount(3, $memberDestination->timeEntries);
+        $this->assertSame([$runningTimeEntryDestination->getKey()], TimeEntry::query()->whereBelongsTo($userDestination, 'user')->whereNull('end')->pluck('id')->all());
     }
 
     public function test_merge_into_assigns_resources_of_source_member_to_destination_member_and_deletes_member_with_existing_destination_resources(): void
@@ -1088,5 +1154,57 @@ class MemberEndpointTest extends ApiEndpointTestAbstract
             'key' => 'user_not_placeholder',
             'message' => 'The given user is not a placeholder',
         ]);
+    }
+
+    public function test_member_update_ignores_billable_rate_but_updates_role_if_organization_can_not_use_billable_rates(): void
+    {
+        // Arrange
+        $data = $this->createUserWithPermission([
+            'members:update',
+        ]);
+        $member = Member::factory()->forOrganization($data->organization)->forUser(User::factory()->create())->role(Role::Employee)->create([
+            'billable_rate' => 10000,
+        ]);
+        $timeEntry = TimeEntry::factory()->forOrganization($data->organization)->forMember($member)->create([
+            'billable' => true,
+            'billable_rate' => 10000,
+        ]);
+        $this->actAsOrganizationWithoutBillableRates();
+        Passport::actingAs($data->user);
+
+        // Act
+        $response = $this->putJson(route('api.v1.members.update', [$data->organization->getKey(), $member->getKey()]), [
+            'billable_rate' => 20000,
+            'role' => Role::Manager->value,
+        ]);
+
+        // Assert
+        $response->assertOk();
+        $member->refresh();
+        $this->assertSame(10000, $member->billable_rate);
+        $this->assertSame(Role::Manager->value, $member->role);
+        $this->assertSame(10000, $timeEntry->refresh()->billable_rate);
+    }
+
+    public function test_member_update_does_not_remove_billable_rate_if_organization_can_not_use_billable_rates(): void
+    {
+        // Arrange
+        $data = $this->createUserWithPermission([
+            'members:update',
+        ]);
+        $member = Member::factory()->forOrganization($data->organization)->forUser(User::factory()->create())->role(Role::Employee)->create([
+            'billable_rate' => 10000,
+        ]);
+        $this->actAsOrganizationWithoutBillableRates();
+        Passport::actingAs($data->user);
+
+        // Act
+        $response = $this->putJson(route('api.v1.members.update', [$data->organization->getKey(), $member->getKey()]), [
+            'billable_rate' => null,
+        ]);
+
+        // Assert
+        $response->assertOk();
+        $this->assertSame(10000, $member->refresh()->billable_rate);
     }
 }

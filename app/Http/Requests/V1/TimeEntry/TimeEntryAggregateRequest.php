@@ -4,8 +4,10 @@ declare(strict_types=1);
 
 namespace App\Http\Requests\V1\TimeEntry;
 
+use App\Enums\TagMatchType;
 use App\Enums\TimeEntryAggregationType;
 use App\Enums\TimeEntryRoundingType;
+use App\Enums\TimeEntryType;
 use App\Http\Requests\V1\BaseFormRequest;
 use App\Models\Client;
 use App\Models\Member;
@@ -14,6 +16,8 @@ use App\Models\Project;
 use App\Models\Tag;
 use App\Models\Task;
 use App\Models\User;
+use App\Service\TimeEntryFilter;
+use Closure;
 use Illuminate\Contracts\Validation\ValidationRule;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Carbon;
@@ -28,7 +32,7 @@ class TimeEntryAggregateRequest extends BaseFormRequest
     /**
      * Get the validation rules that apply to the request.
      *
-     * @return array<string, array<string|ValidationRule|\Illuminate\Contracts\Validation\Rule>>
+     * @return array<string, array<string|ValidationRule|\Illuminate\Contracts\Validation\Rule|Closure>>
      */
     public function rules(): array
     {
@@ -80,10 +84,15 @@ class TimeEntryAggregateRequest extends BaseFormRequest
             ],
             'project_ids.*' => [
                 'string',
-                ExistsEloquent::make(Project::class, null, function (Builder $builder): Builder {
-                    /** @var Builder<Project> $builder */
-                    return $builder->whereBelongsTo($this->organization, 'organization');
-                })->uuid(),
+                function (string $attribute, mixed $value, Closure $fail): void {
+                    if ($value === TimeEntryFilter::NONE_VALUE) {
+                        return;
+                    }
+                    ExistsEloquent::make(Project::class, null, function (Builder $builder): Builder {
+                        /** @var Builder<Project> $builder */
+                        return $builder->whereBelongsTo($this->organization, 'organization');
+                    })->uuid()->validate($attribute, $value, $fail);
+                },
             ],
             // Filter by client IDs, client IDs are OR combined
             'client_ids' => [
@@ -92,10 +101,15 @@ class TimeEntryAggregateRequest extends BaseFormRequest
             ],
             'client_ids.*' => [
                 'string',
-                ExistsEloquent::make(Client::class, null, function (Builder $builder): Builder {
-                    /** @var Builder<Client> $builder */
-                    return $builder->whereBelongsTo($this->organization, 'organization');
-                })->uuid(),
+                function (string $attribute, mixed $value, Closure $fail): void {
+                    if ($value === TimeEntryFilter::NONE_VALUE) {
+                        return;
+                    }
+                    ExistsEloquent::make(Client::class, null, function (Builder $builder): Builder {
+                        /** @var Builder<Client> $builder */
+                        return $builder->whereBelongsTo($this->organization, 'organization');
+                    })->uuid()->validate($attribute, $value, $fail);
+                },
             ],
             // Filter by tag IDs, tag IDs are OR combined
             'tag_ids' => [
@@ -104,10 +118,19 @@ class TimeEntryAggregateRequest extends BaseFormRequest
             ],
             'tag_ids.*' => [
                 'string',
-                ExistsEloquent::make(Tag::class, null, function (Builder $builder): Builder {
-                    /** @var Builder<Tag> $builder */
-                    return $builder->whereBelongsTo($this->organization, 'organization');
-                })->uuid(),
+                function (string $attribute, mixed $value, Closure $fail): void {
+                    if ($value === TimeEntryFilter::NONE_VALUE) {
+                        return;
+                    }
+                    ExistsEloquent::make(Tag::class, null, function (Builder $builder): Builder {
+                        /** @var Builder<Tag> $builder */
+                        return $builder->whereBelongsTo($this->organization, 'organization');
+                    })->uuid()->validate($attribute, $value, $fail);
+                },
+            ],
+            'tag_match_type' => [
+                'string',
+                Rule::enum(TagMatchType::class),
             ],
             // Filter by task IDs, task IDs are OR combined
             'task_ids' => [
@@ -116,9 +139,14 @@ class TimeEntryAggregateRequest extends BaseFormRequest
             ],
             'task_ids.*' => [
                 'string',
-                ExistsEloquent::make(Task::class, null, function (Builder $builder): Builder {
-                    return $builder->whereBelongsTo($this->organization, 'organization');
-                })->uuid(),
+                function (string $attribute, mixed $value, Closure $fail): void {
+                    if ($value === TimeEntryFilter::NONE_VALUE) {
+                        return;
+                    }
+                    ExistsEloquent::make(Task::class, null, function (Builder $builder): Builder {
+                        return $builder->whereBelongsTo($this->organization, 'organization');
+                    })->uuid()->validate($attribute, $value, $fail);
+                },
             ],
             // Filter only time entries that have a start date after the given timestamp in UTC (example: 2021-01-01T00:00:00Z)
             'start' => [
@@ -142,6 +170,11 @@ class TimeEntryAggregateRequest extends BaseFormRequest
             'billable' => [
                 'string',
                 'in:true,false',
+            ],
+            // Filter by time entry type
+            'type' => [
+                'string',
+                Rule::enum(TimeEntryType::class),
             ],
             'fill_gaps_in_time_groups' => [
                 'string',
@@ -185,6 +218,15 @@ class TimeEntryAggregateRequest extends BaseFormRequest
     public function getEnd(): ?Carbon
     {
         return $this->input('end') !== null ? Carbon::createFromFormat('Y-m-d\TH:i:s\Z', $this->input('end'), 'UTC') : null;
+    }
+
+    public function getTagMatchType(): ?TagMatchType
+    {
+        if (! $this->has('tag_match_type') || $this->validated('tag_match_type') === null) {
+            return null;
+        }
+
+        return TagMatchType::from($this->validated('tag_match_type'));
     }
 
     public function getRoundingType(): ?TimeEntryRoundingType

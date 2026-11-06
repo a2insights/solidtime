@@ -5,7 +5,7 @@ import DialogModal from '@/packages/ui/src/DialogModal.vue';
 import { computed, nextTick, ref, watch } from 'vue';
 import PrimaryButton from '@/packages/ui/src/Buttons/PrimaryButton.vue';
 import TimeTrackerProjectTaskDropdown from '@/packages/ui/src/TimeTracker/TimeTrackerProjectTaskDropdown.vue';
-import InputLabel from '@/packages/ui/src/Input/InputLabel.vue';
+import { Field, FieldLabel } from '../field';
 import { TagIcon } from '@heroicons/vue/20/solid';
 import { getLocalizedDayJs } from '@/packages/ui/src/utils/time';
 import type {
@@ -16,15 +16,22 @@ import type {
     TimeEntry,
 } from '@/packages/api/src';
 import TagDropdown from '@/packages/ui/src/Tag/TagDropdown.vue';
-import { Badge } from '@/packages/ui/src';
 import BillableIcon from '@/packages/ui/src/Icons/BillableIcon.vue';
-import SelectDropdown from '@/packages/ui/src/Input/SelectDropdown.vue';
+import { useBillableRatesLock } from '@/packages/ui/src/utils/useBillableRatesLock';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '..';
+import { Button } from '@/packages/ui/src/Buttons';
 import DatePicker from '@/packages/ui/src/Input/DatePicker.vue';
 import DurationHumanInput from '@/packages/ui/src/Input/DurationHumanInput.vue';
 
 import { InformationCircleIcon } from '@heroicons/vue/20/solid';
+import { Coffee } from '@lucide/vue';
 import type { Tag, Task } from '@/packages/api/src';
 import TimePickerSimple from '@/packages/ui/src/Input/TimePickerSimple.vue';
+import { useBreaksEnabled } from '@/packages/ui/src/utils/useBreaksEnabled';
+
+// Breaks may have been disabled after this entry was created, so an existing break can still be
+// edited (and converted back), but a work entry may only offer the break option when enabled.
+const breaksEnabled = useBreaksEnabled();
 
 const show = defineModel('show', { default: false });
 const saving = ref(false);
@@ -43,6 +50,7 @@ const props = defineProps<{
     tasks: Task[];
     clients: Client[];
     currency: string;
+    organizationBillableRate: number | null;
     canCreateProject: boolean;
 }>();
 
@@ -57,6 +65,7 @@ watch(show, (value) => {
 });
 
 const editableTimeEntry = ref<TimeEntry | null>(null);
+const { locked: billableRatesLocked } = useBillableRatesLock();
 
 watch(
     () => props.timeEntry,
@@ -66,6 +75,18 @@ watch(
         }
     },
     { immediate: true }
+);
+
+watch(
+    () => editableTimeEntry.value?.project_id,
+    (value, oldValue) => {
+        if (oldValue !== undefined && value !== oldValue && editableTimeEntry.value) {
+            const project = props.projects.find((p) => p.id === value);
+            if (project) {
+                editableTimeEntry.value.billable = project.is_billable;
+            }
+        }
+    }
 );
 
 const localStart = computed({
@@ -115,6 +136,11 @@ async function deleteEntry() {
     }
 }
 
+// Organizations with locked billable rates can not make a non-billable time entry billable
+const billableOptionLocked = computed(
+    () => billableRatesLocked.value && !props.timeEntry?.billable
+);
+
 const billableProxy = computed({
     get: () =>
         editableTimeEntry.value ? (editableTimeEntry.value.billable ? 'true' : 'false') : 'false',
@@ -125,14 +151,27 @@ const billableProxy = computed({
     },
 });
 
-type BillableOption = {
-    label: string;
-    value: string;
-};
+const isBreak = computed(() => editableTimeEntry.value?.type === 'break');
+
+const typeProxy = computed({
+    get: () => editableTimeEntry.value?.type ?? 'work',
+    set: (value: string) => {
+        if (editableTimeEntry.value) {
+            editableTimeEntry.value.type = value as TimeEntry['type'];
+            if (value === 'break') {
+                // Breaks can not be billable, have tags or belong to a project/task
+                editableTimeEntry.value.project_id = null;
+                editableTimeEntry.value.task_id = null;
+                editableTimeEntry.value.billable = false;
+                editableTimeEntry.value.tags = [];
+            }
+        }
+    },
+});
 </script>
 
 <template>
-    <DialogModal closeable :show="show" @close="show = false">
+    <DialogModal closeable :show="show" @close="show = false" @submit="submit">
         <template #title>
             <div class="flex space-x-2">
                 <span> Edit time entry </span>
@@ -153,121 +192,111 @@ type BillableOption = {
                             @keydown.enter="submit" />
                     </div>
                 </div>
-                <div
-                    class="sm:flex justify-between items-end space-y-2 sm:space-y-0 pt-4 sm:space-x-4">
-                    <div class="flex w-full items-center space-x-2 justify-between">
-                        <div class="flex-1 min-w-0">
-                            <TimeTrackerProjectTaskDropdown
-                                v-model:project="editableTimeEntry.project_id"
-                                v-model:task="editableTimeEntry.task_id"
-                                :clients
-                                :create-project
-                                :create-client
-                                :can-create-project="canCreateProject"
-                                :currency="currency"
-                                size="xlarge"
-                                class="bg-input-background"
-                                :projects="projects"
-                                :tasks="tasks"
-                                :enable-estimated-time="
-                                    enableEstimatedTime
-                                "></TimeTrackerProjectTaskDropdown>
-                        </div>
-                        <div class="flex items-center space-x-2">
-                            <div class="flex-col">
-                                <TagDropdown
-                                    v-model="editableTimeEntry.tags"
-                                    :create-tag
-                                    :tags="tags">
-                                    <template #trigger>
-                                        <Badge
-                                            class="bg-input-background"
-                                            tag="button"
-                                            size="xlarge">
-                                            <TagIcon
-                                                v-if="editableTimeEntry.tags.length === 0"
-                                                class="w-4"></TagIcon>
-                                            <div
-                                                v-else
-                                                class="bg-accent-300/20 w-5 h-5 font-medium rounded flex items-center transition justify-center">
-                                                {{ editableTimeEntry.tags.length }}
-                                            </div>
-                                            <span>Tags</span>
-                                        </Badge>
-                                    </template>
-                                </TagDropdown>
-                            </div>
-                            <div class="flex-col">
-                                <SelectDropdown
-                                    v-model="billableProxy"
-                                    :get-key-from-item="(item: BillableOption) => item.value"
-                                    :get-name-for-item="(item: BillableOption) => item.label"
-                                    :items="[
-                                        {
-                                            label: 'Billable',
-                                            value: 'true',
-                                        },
-                                        {
-                                            label: 'Non Billable',
-                                            value: 'false',
-                                        },
-                                    ]">
-                                    <template #trigger>
-                                        <Badge
-                                            class="bg-input-background"
-                                            tag="button"
-                                            size="xlarge">
-                                            <BillableIcon class="h-4"></BillableIcon>
-                                            <span>{{
-                                                editableTimeEntry.billable
-                                                    ? 'Billable'
-                                                    : 'Non-Billable'
-                                            }}</span>
-                                        </Badge>
-                                    </template>
-                                </SelectDropdown>
-                            </div>
-                        </div>
+                <div class="flex flex-col sm:flex-row sm:items-end gap-2">
+                    <div v-if="!isBreak" class="flex-1 min-w-0">
+                        <TimeTrackerProjectTaskDropdown
+                            v-model:project="editableTimeEntry.project_id"
+                            v-model:task="editableTimeEntry.task_id"
+                            variant="input"
+                            size="default"
+                            :clients
+                            :create-project
+                            :create-client
+                            :can-create-project="canCreateProject"
+                            :currency="currency"
+                            :organization-billable-rate="organizationBillableRate"
+                            :projects="projects"
+                            :tasks="tasks"
+                            :enable-estimated-time="enableEstimatedTime" />
+                    </div>
+                    <div v-else class="flex-1 min-w-0"></div>
+                    <div class="flex items-center gap-2 shrink-0">
+                        <Select v-if="breaksEnabled || isBreak" v-model="typeProxy">
+                            <SelectTrigger :show-chevron="false">
+                                <SelectValue class="flex items-center gap-2">
+                                    <Coffee
+                                        class="h-4 w-4"
+                                        :class="isBreak ? 'text-amber-500' : 'text-icon-default'" />
+                                    <span>{{ isBreak ? 'Break' : 'Work time' }}</span>
+                                </SelectValue>
+                            </SelectTrigger>
+                            <SelectContent>
+                                <SelectItem value="work">Work time</SelectItem>
+                                <SelectItem value="break">Break</SelectItem>
+                            </SelectContent>
+                        </Select>
+                        <TagDropdown
+                            v-if="!isBreak"
+                            v-model="editableTimeEntry.tags"
+                            :create-tag
+                            :tags="tags"
+                            :show-no-tag-option="false">
+                            <template #trigger>
+                                <Button variant="input">
+                                    <TagIcon class="h-4 text-icon-default" />
+                                    <span>{{
+                                        editableTimeEntry.tags.length === 0
+                                            ? 'Tags'
+                                            : `${editableTimeEntry.tags.length} Tag${editableTimeEntry.tags.length > 1 ? 's' : ''}`
+                                    }}</span>
+                                </Button>
+                            </template>
+                        </TagDropdown>
+                        <Select v-if="!isBreak" v-model="billableProxy">
+                            <SelectTrigger :show-chevron="false">
+                                <SelectValue class="flex items-center gap-2">
+                                    <BillableIcon class="h-4 text-icon-default" />
+                                    <span>{{
+                                        editableTimeEntry.billable ? 'Billable' : 'Non-Billable'
+                                    }}</span>
+                                </SelectValue>
+                            </SelectTrigger>
+                            <SelectContent>
+                                <SelectItem value="true" :disabled="billableOptionLocked"
+                                    >Billable</SelectItem
+                                >
+                                <SelectItem value="false">Non Billable</SelectItem>
+                            </SelectContent>
+                        </Select>
                     </div>
                 </div>
-                <div class="flex pt-4 space-x-4">
-                    <div class="flex-1">
-                        <InputLabel>Duration</InputLabel>
-                        <div class="space-y-2 mt-1 flex flex-col">
+                <div class="grid grid-cols-2 sm:grid-cols-5 gap-4 pt-4">
+                    <Field class="col-span-2 sm:col-span-3">
+                        <FieldLabel>Duration</FieldLabel>
+                        <div class="space-y-2 flex flex-col">
                             <DurationHumanInput
                                 v-model:start="localStart"
                                 v-model:end="localEnd"
                                 name="Duration"></DurationHumanInput>
                             <div class="text-sm flex space-x-1">
                                 <InformationCircleIcon
-                                    class="w-4 text-text-quaternary"></InformationCircleIcon>
+                                    class="w-4 shrink-0 text-text-quaternary"></InformationCircleIcon>
                                 <span class="text-text-secondary text-xs">
-                                    You can type natural language here f.e.
+                                    You can type natural language like
                                     <span class="font-semibold"> 2h 30m</span>
                                 </span>
                             </div>
                         </div>
-                    </div>
-                    <div class="">
-                        <InputLabel>Start</InputLabel>
-                        <div class="flex flex-col items-center space-y-2 mt-1">
-                            <TimePickerSimple v-model="localStart" size="large"></TimePickerSimple>
+                    </Field>
+                    <Field>
+                        <FieldLabel>Start</FieldLabel>
+                        <div class="flex flex-col gap-2">
+                            <TimePickerSimple
+                                v-model="localStart"
+                                class="w-full"></TimePickerSimple>
                             <DatePicker
                                 v-model="localStart"
-                                tabindex="1"
-                                class="text-xs text-text-tertiary max-w-28 px-1.5 py-1.5"></DatePicker>
+                                class="w-full"
+                                tabindex="1"></DatePicker>
                         </div>
-                    </div>
-                    <div class="">
-                        <InputLabel>End</InputLabel>
-                        <div class="flex flex-col items-center space-y-2 mt-1">
-                            <TimePickerSimple v-model="localEnd" size="large"></TimePickerSimple>
-                            <DatePicker
-                                v-model="localEnd"
-                                tabindex="1"
-                                class="text-xs text-text-tertiary max-w-28 px-1.5 py-1.5"></DatePicker>
+                    </Field>
+                    <Field>
+                        <FieldLabel>End</FieldLabel>
+                        <div class="flex flex-col gap-2">
+                            <TimePickerSimple v-model="localEnd" class="w-full"></TimePickerSimple>
+                            <DatePicker v-model="localEnd" class="w-full" tabindex="1"></DatePicker>
                         </div>
-                    </div>
+                    </Field>
                 </div>
             </div>
         </template>

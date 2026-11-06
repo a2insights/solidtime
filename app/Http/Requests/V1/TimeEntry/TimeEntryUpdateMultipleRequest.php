@@ -4,14 +4,18 @@ declare(strict_types=1);
 
 namespace App\Http\Requests\V1\TimeEntry;
 
+use App\Enums\TimeEntryType;
 use App\Http\Requests\V1\BaseFormRequest;
 use App\Models\Member;
 use App\Models\Organization;
 use App\Models\Project;
 use App\Models\Tag;
 use App\Models\Task;
+use App\Service\PermissionStore;
 use Illuminate\Contracts\Validation\ValidationRule;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Validation\Rule;
 use Korridor\LaravelModelValidationRules\Rules\ExistsEloquent;
 
 /**
@@ -22,7 +26,7 @@ class TimeEntryUpdateMultipleRequest extends BaseFormRequest
     /**
      * Get the validation rules that apply to the request.
      *
-     * @return array<string, array<string|ValidationRule>>
+     * @return array<string, array<string|ValidationRule|\Illuminate\Contracts\Validation\Rule>>
      */
     public function rules(): array
     {
@@ -52,15 +56,26 @@ class TimeEntryUpdateMultipleRequest extends BaseFormRequest
                 'nullable',
                 'string',
                 'required_with:task_id',
+                'prohibited_if:changes.type,break',
                 ExistsEloquent::make(Project::class, null, function (Builder $builder): Builder {
                     /** @var Builder<Project> $builder */
-                    return $builder->whereBelongsTo($this->organization, 'organization');
+                    $builder = $builder->whereBelongsTo($this->organization, 'organization');
+
+                    // If user doesn't have 'all' permission for time entries or projects, only allow access to public projects or projects they're a member of
+                    $permissionStore = app(PermissionStore::class);
+                    if (! $permissionStore->has($this->organization, 'time-entries:update:all')
+                        && ! $permissionStore->has($this->organization, 'projects:view:all')) {
+                        $builder = $builder->visibleByEmployee(Auth::user());
+                    }
+
+                    return $builder;
                 })->uuid(),
             ],
             // ID of the task that the time entry should belong to
             'changes.task_id' => [
                 'nullable',
                 'string',
+                'prohibited_if:changes.type,break',
                 ExistsEloquent::make(Task::class, null, function (Builder $builder): Builder {
                     /** @var Builder<Task> $builder */
                     return $builder->whereBelongsTo($this->organization, 'organization');
@@ -73,7 +88,13 @@ class TimeEntryUpdateMultipleRequest extends BaseFormRequest
             ],
             // Whether time entry is billable
             'changes.billable' => [
+                'sometimes',
                 'boolean',
+                'declined_if:changes.type,break',
+            ],
+            // Type of the time entry (work time or a break)
+            'changes.type' => [
+                Rule::enum(TimeEntryType::class),
             ],
             // Description of time entry
             'changes.description' => [
@@ -85,6 +106,7 @@ class TimeEntryUpdateMultipleRequest extends BaseFormRequest
             'changes.tags' => [
                 'nullable',
                 'array',
+                'prohibited_if:changes.type,break',
             ],
             'changes.tags.*' => [
                 'string',

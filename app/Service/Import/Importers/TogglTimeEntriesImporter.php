@@ -14,6 +14,7 @@ use Illuminate\Support\Carbon;
 use Illuminate\Support\Str;
 use League\Csv\Exception as CsvException;
 use League\Csv\Reader;
+use Override;
 
 class TogglTimeEntriesImporter extends DefaultImporter
 {
@@ -43,7 +44,7 @@ class TogglTimeEntriesImporter extends DefaultImporter
     /**
      * @throws ImportException
      */
-    #[\Override]
+    #[Override]
     public function importData(string $data, string $timezone): void
     {
         try {
@@ -97,6 +98,7 @@ class TogglTimeEntriesImporter extends DefaultImporter
                 }
                 $taskId = null;
                 if ($record['Task'] !== '') {
+                    $this->checkTaskNameLength($record['Task']);
                     $taskId = $this->taskImportHelper->getKey([
                         'name' => $record['Task'],
                         'project_id' => $projectId,
@@ -110,13 +112,13 @@ class TogglTimeEntriesImporter extends DefaultImporter
                 $timeEntry->member_id = $memberId;
                 $timeEntry->task_id = $taskId;
                 $timeEntry->project_id = $projectId;
-                $timeEntry->client_id = $clientId;
+                $timeEntry->client_id = $project?->client_id;
                 $timeEntry->organization_id = $this->organization->id;
                 $timeEntry->description = $record['Description'];
                 if (! in_array($record['Billable'], ['Yes', 'No'], true)) {
                     throw new ImportException('Invalid billable value');
                 }
-                $timeEntry->billable = $record['Billable'] === 'Yes';
+                $timeEntry->billable = $this->canUseBillableRates && $record['Billable'] === 'Yes';
                 $timeEntry->tags = $this->getTags($record['Tags']);
                 $timeEntry->is_imported = true;
                 try {
@@ -136,6 +138,9 @@ class TogglTimeEntriesImporter extends DefaultImporter
                 }
                 if ($end === null) {
                     throw new ImportException('End date ("'.$record['End date'].'") or time ("'.$record['End time'].'") are invalid');
+                }
+                if ($end->lt($start)) {
+                    throw new ImportException('End ("'.$record['End date'].' '.$record['End time'].'") is before start ("'.$record['Start date'].' '.$record['Start time'].'")');
                 }
                 $timeEntry->end = $end->utc();
                 $timeEntry->billable_rate = $this->billableRateService->getBillableRateForTimeEntryWithGivenRelations(
@@ -192,13 +197,13 @@ class TogglTimeEntriesImporter extends DefaultImporter
         }
     }
 
-    #[\Override]
+    #[Override]
     public function getName(): string
     {
         return __('importer.toggl_time_entries.name');
     }
 
-    #[\Override]
+    #[Override]
     public function getDescription(): string
     {
         return __('importer.toggl_time_entries.description');

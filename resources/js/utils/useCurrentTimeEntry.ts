@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia';
-import { computed, reactive, ref } from 'vue';
+import { computed, ref, watch } from 'vue';
 import { api } from '@/packages/api/src';
 import type { TimeEntry } from '@/packages/api/src';
 import dayjs, { Dayjs } from 'dayjs';
@@ -10,8 +10,8 @@ import {
     getCurrentUserId,
 } from '@/utils/useUser';
 import { useLocalStorage } from '@vueuse/core';
-import { useTimeEntriesStore } from '@/utils/useTimeEntries';
 import { useNotificationsStore } from '@/utils/notification';
+import { useQueryClient } from '@tanstack/vue-query';
 
 dayjs.extend(utc);
 
@@ -26,13 +26,37 @@ const emptyTimeEntry = {
     project_id: null,
     tags: [],
     billable: false,
+    type: 'work',
     organization_id: '',
 } as TimeEntry;
 
-export const useCurrentTimeEntryStore = defineStore('currentTimeEntry', () => {
-    const currentTimeEntry = ref<TimeEntry>(reactive(emptyTimeEntry));
-    const { handleApiRequestNotifications } = useNotificationsStore();
+export type ResumeTimeEntryContext = {
+    description: string | null;
+    project_id: string | null;
+    task_id: string | null;
+    tags: string[];
+    billable: boolean;
+};
 
+/**
+ * Time entries are loaded newest-first. Ignore scheduled entries so resuming after a break
+ * always uses the latest work entry that has actually started.
+ */
+export function getLastWorkTimeEntry(
+    timeEntries: TimeEntry[],
+    currentTime: Dayjs = dayjs().utc()
+): TimeEntry | null {
+    return (
+        timeEntries.find(
+            (entry) => entry.type === 'work' && !dayjs(entry.start).utc().isAfter(currentTime)
+        ) ?? null
+    );
+}
+
+export const useCurrentTimeEntryStore = defineStore('currentTimeEntry', () => {
+    const currentTimeEntry = ref<TimeEntry>({ ...emptyTimeEntry });
+    const { handleApiRequestNotifications } = useNotificationsStore();
+    const queryClient = useQueryClient();
     useLocalStorage('solidtime/current-time-entry', currentTimeEntry, {
         deep: true,
     });
@@ -64,20 +88,20 @@ export const useCurrentTimeEntryStore = defineStore('currentTimeEntry', () => {
             try {
                 const timeEntriesResponse = await api.getMyActiveTimeEntry({});
                 if (timeEntriesResponse?.data) {
-                    if (timeEntriesResponse.data) {
-                        currentTimeEntry.value = timeEntriesResponse.data;
-                        if (
-                            currentTimeEntry.value.start !== '' &&
-                            currentTimeEntry.value.end === null
-                        ) {
-                            startLiveTimer();
-                        }
-                    } else {
-                        currentTimeEntry.value = { ...emptyTimeEntry };
-                    }
+                    currentTimeEntry.value = timeEntriesResponse.data;
+                } else if (currentTimeEntry.value.id !== '') {
+                    // No active time entry on server
+                    // Only reset if we had a previously started timer (has an ID)
+                    // Don't reset if user is preparing a new time entry (no ID yet)
+                    currentTimeEntry.value = { ...emptyTimeEntry };
                 }
             } catch {
-                currentTimeEntry.value = { ...emptyTimeEntry };
+                // API error (e.g., 404 when no active time entry)
+                // Only reset if we had a previously started timer (has an ID)
+                // Don't reset if user is preparing a new time entry (no ID yet)
+                if (currentTimeEntry.value.id !== '') {
+                    currentTimeEntry.value = { ...emptyTimeEntry };
+                }
             }
         } else {
             throw new Error(
@@ -104,6 +128,7 @@ export const useCurrentTimeEntryStore = defineStore('currentTimeEntry', () => {
                             project_id: currentTimeEntry.value?.project_id,
                             task_id: currentTimeEntry.value?.task_id,
                             billable: currentTimeEntry.value.billable,
+                            type: currentTimeEntry.value?.type ?? 'work',
                             tags: currentTimeEntry.value?.tags,
                         },
                         { params: { organization: organization } }
@@ -120,11 +145,11 @@ export const useCurrentTimeEntryStore = defineStore('currentTimeEntry', () => {
         }
     }
 
-    async function stopTimer() {
+    async function stopTimer(endTime?: string) {
         const user = getCurrentUserId();
         const organization = getCurrentOrganizationId();
         if (organization) {
-            const currentDateTime = dayjs().utc().format();
+            const currentDateTime = endTime ?? dayjs().utc().format();
             await handleApiRequestNotifications(
                 () =>
                     api.updateTimeEntry(
@@ -146,6 +171,60 @@ export const useCurrentTimeEntryStore = defineStore('currentTimeEntry', () => {
         } else {
             throw new Error('Failed to stop current timer because organization ID is missing.');
         }
+    }
+
+    async function startBreak() {
+        const organization = getCurrentOrganizationId();
+        const membership = getCurrentMembershipId();
+        if (!organization || !membership) {
+            throw new Error('Failed to start break because organization ID is missing.');
+        }
+        // One timestamp for both the work end and the break start, so the entries touch exactly
+        const switchTime = dayjs().utc().format();
+        if (isActive.value && currentTimeEntry.value.type !== 'break') {
+            await stopTimer(switchTime);
+        }
+        startLiveTimer();
+        const response = await handleApiRequestNotifications(
+            () =>
+                api.createTimeEntry(
+                    {
+                        member_id: membership,
+                        start: switchTime,
+                        billable: false,
+                        type: 'break',
+                    },
+                    { params: { organization: organization } }
+                ),
+            'Break started!',
+            'Your timer was stopped, but the break could not be started.'
+        );
+        if (response?.data) {
+            currentTimeEntry.value = response.data;
+        } else {
+            stopLiveTimer();
+        }
+        queryClient.invalidateQueries({ queryKey: ['timeEntries'] });
+        queryClient.invalidateQueries({ queryKey: ['goals'] });
+    }
+
+    async function resumeWorkAfterBreak(context: ResumeTimeEntryContext) {
+        if (isActive.value && currentTimeEntry.value.type === 'break') {
+            stopLiveTimer();
+            await stopTimer();
+        }
+        currentTimeEntry.value = {
+            ...emptyTimeEntry,
+            description: context.description ?? '',
+            project_id: context.project_id,
+            task_id: context.task_id,
+            tags: context.tags ?? [],
+            billable: context.billable,
+        };
+        startLiveTimer();
+        await startTimer();
+        queryClient.invalidateQueries({ queryKey: ['timeEntries'] });
+        queryClient.invalidateQueries({ queryKey: ['goals'] });
     }
 
     async function updateTimer() {
@@ -182,6 +261,7 @@ export const useCurrentTimeEntryStore = defineStore('currentTimeEntry', () => {
                     stopLiveTimer();
                 }
             }
+            queryClient.invalidateQueries({ queryKey: ['goals'] });
         } else {
             throw new Error(
                 'Failed to fetch current time entry because organization ID is missing.'
@@ -200,6 +280,22 @@ export const useCurrentTimeEntryStore = defineStore('currentTimeEntry', () => {
         return false;
     });
 
+    const isOnBreak = computed(() => {
+        return isActive.value && currentTimeEntry.value.type === 'break';
+    });
+
+    watch(
+        isActive,
+        (active) => {
+            if (active) {
+                startLiveTimer();
+            } else {
+                stopLiveTimer();
+            }
+        },
+        { immediate: true }
+    );
+
     async function setActiveState(newState: boolean) {
         if (newState) {
             startLiveTimer();
@@ -208,7 +304,8 @@ export const useCurrentTimeEntryStore = defineStore('currentTimeEntry', () => {
             stopLiveTimer();
             await stopTimer();
         }
-        useTimeEntriesStore().fetchTimeEntries();
+        queryClient.invalidateQueries({ queryKey: ['timeEntries'] });
+        queryClient.invalidateQueries({ queryKey: ['goals'] });
     }
 
     return {
@@ -216,6 +313,9 @@ export const useCurrentTimeEntryStore = defineStore('currentTimeEntry', () => {
         fetchCurrentTimeEntry,
         updateTimer,
         isActive,
+        isOnBreak,
+        startBreak,
+        resumeWorkAfterBreak,
         startLiveTimer,
         stopLiveTimer,
         now,

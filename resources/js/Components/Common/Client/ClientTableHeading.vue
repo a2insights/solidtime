@@ -1,19 +1,39 @@
 <script setup lang="ts">
 import TableHeading from '@/Components/Common/TableHeading.vue';
+import SortableTableHeaderCell from '@/Components/Common/SortableTableHeaderCell.vue';
+import type { SortColumn, SortDirection } from '@/Components/Common/Client/ClientTable.vue';
+
+const props = defineProps<{
+    sortColumn: SortColumn;
+    sortDirection: SortDirection;
+    descFirstColumns: ReadonlySet<SortColumn>;
+}>();
+
+defineEmits<{
+    sort: [column: SortColumn];
+}>();
 </script>
 
 <template>
     <TableHeading>
-        <div
-            class="py-1.5 pr-3 text-left font-semibold text-text-primary pl-4 sm:pl-6 lg:pl-8 3xl:pl-12">
+        <SortableTableHeaderCell
+            class="pr-3 pl-4 sm:pl-6 lg:pl-8 3xl:pl-12"
+            column="name"
+            v-bind="props"
+            @sort="$emit('sort', $event)">
             Name
-        </div>
-        <div class="px-3 py-1.5 text-left font-semibold text-text-primary"></div>
-        <div class="px-3 py-1.5 text-left font-semibold text-text-primary">Status</div>
+        </SortableTableHeaderCell>
+        <SortableTableHeaderCell
+            column="projects_count"
+            v-bind="props"
+            @sort="$emit('sort', $event)">
+            Projects
+        </SortableTableHeaderCell>
+        <SortableTableHeaderCell column="status" v-bind="props" @sort="$emit('sort', $event)">
+            Status
+        </SortableTableHeaderCell>
         <div class="relative py-1.5 pl-3 pr-4 sm:pr-6 lg:pr-8 3xl:pr-12">
             <span class="sr-only">Edit</span>
         </div>
     </TableHeading>
 </template>
-
-<style scoped></style>

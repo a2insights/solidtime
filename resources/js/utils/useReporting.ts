@@ -1,21 +1,26 @@
-import { defineStore, storeToRefs } from 'pinia';
-import { api } from '@/packages/api/src';
-import { type Component, computed, ref } from 'vue';
-import type {
-    AggregatedTimeEntries,
-    AggregatedTimeEntriesQueryParams,
-    ReportingResponse,
-} from '@/packages/api/src';
-import { getCurrentOrganizationId, getCurrentRole, getCurrentUser } from '@/utils/useUser';
-import { useNotificationsStore } from '@/utils/notification';
-import { useProjectsStore } from '@/utils/useProjects';
-import { useMembersStore } from '@/utils/useMembers';
-import { useTasksStore } from '@/utils/useTasks';
-import { useClientsStore } from '@/utils/useClients';
-import { useTagsStore } from '@/utils/useTags';
+import { defineStore } from 'pinia';
+import { type Component } from 'vue';
+import { getCurrentRole, getCurrentUser } from '@/utils/useUser';
+import { useProjectsQuery } from '@/utils/useProjectsQuery';
+import { useMembersQuery } from '@/utils/useMembersQuery';
+import { useTasksQuery } from '@/utils/useTasksQuery';
+import { useClientsQuery } from '@/utils/useClientsQuery';
+import { useTagsQuery } from '@/utils/useTagsQuery';
 import { CheckCircleIcon, UserCircleIcon, UserGroupIcon } from '@heroicons/vue/20/solid';
-import { DocumentTextIcon, FolderIcon } from '@heroicons/vue/16/solid';
+import {
+    CalendarDaysIcon,
+    CalendarIcon,
+    DocumentTextIcon,
+    FolderIcon,
+} from '@heroicons/vue/16/solid';
+import { Coffee } from '@lucide/vue';
 import BillableIcon from '@/packages/ui/src/Icons/BillableIcon.vue';
+import {
+    type DateFormat,
+    formatDate,
+    formatMonth,
+    formatWeekRange,
+} from '@/packages/ui/src/utils/time';
 
 export type GroupingOption =
     | 'project'
@@ -24,55 +29,20 @@ export type GroupingOption =
     | 'billable'
     | 'client'
     | 'description'
-    | 'tag';
+    | 'tag'
+    | 'type'
+    | 'day'
+    | 'week'
+    | 'month'
+    | 'year';
 
 export const useReportingStore = defineStore('reporting', () => {
-    const reportingGraphResponse = ref<ReportingResponse | null>(null);
-    const reportingTableResponse = ref<ReportingResponse | null>(null);
-
-    const { handleApiRequestNotifications } = useNotificationsStore();
-
-    async function fetchGraphReporting(params: AggregatedTimeEntriesQueryParams) {
-        const organization = getCurrentOrganizationId();
-        if (organization) {
-            reportingGraphResponse.value = await handleApiRequestNotifications(
-                () =>
-                    api.getAggregatedTimeEntries({
-                        params: {
-                            organization: organization,
-                        },
-                        queries: params,
-                    }),
-                undefined,
-                'Failed to fetch reporting data'
-            );
-        }
-    }
-
-    async function fetchTableReporting(params: AggregatedTimeEntriesQueryParams) {
-        const organization = getCurrentOrganizationId();
-        if (organization) {
-            reportingTableResponse.value = await handleApiRequestNotifications(
-                () =>
-                    api.getAggregatedTimeEntries({
-                        params: {
-                            organization: organization,
-                        },
-                        queries: params,
-                    }),
-                undefined,
-                'Failed to fetch reporting data'
-            );
-        }
-    }
-
-    const aggregatedGraphTimeEntries = computed<AggregatedTimeEntries>(() => {
-        return reportingGraphResponse.value?.data as AggregatedTimeEntries;
-    });
-
-    const aggregatedTableTimeEntries = computed<AggregatedTimeEntries>(() => {
-        return reportingTableResponse.value?.data as AggregatedTimeEntries;
-    });
+    // Cache query composables to avoid creating new subscriptions on every call
+    const { projects } = useProjectsQuery();
+    const { members } = useMembersQuery();
+    const { tasks } = useTasksQuery();
+    const { clients } = useClientsQuery();
+    const { tags } = useTagsQuery();
 
     const emptyPlaceholder = {
         user: 'No User',
@@ -82,9 +52,14 @@ export const useReportingStore = defineStore('reporting', () => {
         client: 'No Client',
         description: 'No Description',
         tag: 'No Tag',
+        type: 'Work time',
     } as Record<string, string>;
 
-    function getNameForReportingRowEntry(key: string | null, type: string | null) {
+    function getNameForReportingRowEntry(
+        key: string | null,
+        type: string | null,
+        dateFormat?: DateFormat
+    ) {
         if (type === null) {
             return null;
         }
@@ -93,31 +68,21 @@ export const useReportingStore = defineStore('reporting', () => {
         }
 
         if (type === 'project') {
-            const projectsStore = useProjectsStore();
-            const { projects } = storeToRefs(projectsStore);
             return projects.value.find((project) => project.id === key)?.name;
         }
         if (type === 'user') {
             if (getCurrentRole() === 'employee') {
                 return getCurrentUser().name;
             }
-            const memberStore = useMembersStore();
-            const { members } = storeToRefs(memberStore);
             return members.value.find((member) => member.user_id === key)?.name;
         }
         if (type === 'task') {
-            const taskStore = useTasksStore();
-            const { tasks } = storeToRefs(taskStore);
             return tasks.value.find((task) => task.id === key)?.name;
         }
         if (type === 'client') {
-            const clientsStore = useClientsStore();
-            const { clients } = storeToRefs(clientsStore);
             return clients.value.find((client) => client.id === key)?.name;
         }
         if (type === 'tag') {
-            const tagsStore = useTagsStore();
-            const { tags } = storeToRefs(tagsStore);
             return tags.value.find((tag) => tag.id === key)?.name;
         }
         if (type === 'billable') {
@@ -127,6 +92,19 @@ export const useReportingStore = defineStore('reporting', () => {
                 return 'Billable';
             }
         }
+        if (type === 'type') {
+            return key === 'break' ? 'Break' : 'Work time';
+        }
+        if (type === 'day') {
+            return formatDate(key, dateFormat);
+        }
+        if (type === 'week') {
+            return formatWeekRange(key, dateFormat);
+        }
+        if (type === 'month') {
+            return formatMonth(key);
+        }
+        // A `year` key is already a bare year, so it falls through unchanged.
         return key;
     }
 
@@ -161,6 +139,11 @@ export const useReportingStore = defineStore('reporting', () => {
             icon: BillableIcon,
         },
         {
+            label: 'Type',
+            value: 'type',
+            icon: Coffee,
+        },
+        {
             label: 'Description',
             value: 'description',
             icon: DocumentTextIcon,
@@ -170,13 +153,19 @@ export const useReportingStore = defineStore('reporting', () => {
             value: 'tag',
             icon: DocumentTextIcon,
         },
+        {
+            label: 'Date',
+            value: 'day',
+            icon: CalendarIcon,
+        },
+        {
+            label: 'Week',
+            value: 'week',
+            icon: CalendarDaysIcon,
+        },
     ];
 
     return {
-        aggregatedGraphTimeEntries,
-        fetchGraphReporting,
-        fetchTableReporting,
-        aggregatedTableTimeEntries,
         getNameForReportingRowEntry,
         groupByOptions,
         emptyPlaceholder,

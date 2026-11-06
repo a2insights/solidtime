@@ -14,13 +14,14 @@ use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Str;
+use RuntimeException;
 
 class ApiTokenController extends Controller
 {
     /**
      * List all api token of the currently authenticated user
      *
-     * This endpoint is independent of organization.
+     * This endpoint is independent of the organization.
      *
      * @operationId getApiTokens
      *
@@ -35,6 +36,7 @@ class ApiTokenController extends Controller
                 /** @var Builder<Client> $query */
                 $query->whereJsonContains('grant_types', 'personal_access');
             })
+            ->orderBy('created_at', 'desc')
             ->get();
 
         return new ApiTokenCollection($tokens);
@@ -61,7 +63,7 @@ class ApiTokenController extends Controller
             $tokenModel = $token->getToken();
 
             return new ApiTokenWithAccessTokenResource($tokenModel, $token->accessToken);
-        } catch (\RuntimeException $exception) {
+        } catch (RuntimeException $exception) {
             report($exception);
             if (Str::contains($exception->getMessage(), ['Personal access client not found'])) {
                 throw new PersonalAccessClientIsNotConfiguredException;

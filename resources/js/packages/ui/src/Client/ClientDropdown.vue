@@ -1,7 +1,5 @@
 <script setup lang="ts">
-import { PlusCircleIcon } from '@heroicons/vue/20/solid';
 import { computed, nextTick, ref, watch } from 'vue';
-import ClientDropdownItem from '@/packages/ui/src/Client/ClientDropdownItem.vue';
 import type { CreateClientBody, Client } from '@/packages/api/src';
 import {
     ComboboxAnchor,
@@ -10,9 +8,10 @@ import {
     ComboboxItem,
     ComboboxRoot,
     ComboboxViewport,
-} from 'radix-vue';
-import { UseFocusTrap } from '@vueuse/integrations/useFocusTrap/component';
+    ComboboxVirtualizer,
+} from 'reka-ui';
 import Dropdown from '@/packages/ui/src/Input/Dropdown.vue';
+import { Check, Plus } from '@lucide/vue';
 
 const model = defineModel<string | null>({
     default: null,
@@ -26,10 +25,6 @@ const props = defineProps<{
 const searchInput = ref<HTMLElement | null>(null);
 const open = ref(false);
 const searchValue = ref('');
-
-function isClientSelected(id: string) {
-    return model.value === id;
-}
 
 watch(open, (isOpen) => {
     if (isOpen) {
@@ -59,14 +54,22 @@ async function addClientIfNoneExists() {
     }
 }
 
+const NO_CLIENT: { id: string | null; name: string } = { id: null, name: 'No Client' };
+
 const currentClient = computed(() => {
-    return (
-        props.clients.find((client) => client.id === model.value) ?? {
-            id: null,
-            name: 'No Client',
-        }
-    );
+    return props.clients.find((client) => client.id === model.value) ?? NO_CLIENT;
 });
+
+type ClientRow = Client | typeof NO_CLIENT;
+
+// Fold the "No Client" entry in as the first row so the whole list virtualizes through one
+// ComboboxVirtualizer. NO_CLIENT is a shared constant so currentClient and the row reference
+// the same object and single-select highlighting still matches.
+const clientRows = computed<ClientRow[]>(() => [NO_CLIENT, ...filteredClients.value]);
+
+function clientRowName(row: ClientRow) {
+    return row.name;
+}
 
 const emit = defineEmits(['update:modelValue', 'changed']);
 
@@ -77,55 +80,61 @@ function updateValue(client: { id: string | null; name: string }) {
 </script>
 
 <template>
-    <Dropdown v-model="open" align="start" width="60">
+    <Dropdown v-model="open" align="start">
         <template #trigger>
             <slot name="trigger"></slot>
         </template>
         <template #content>
-            <UseFocusTrap v-if="open" :options="{ immediate: true, allowOutsideClick: true }">
+            <div>
                 <ComboboxRoot
-                    v-model:search-term="searchValue"
-                    :open="open"
+                    :open="true"
                     :model-value="currentClient"
                     class="relative"
-                    @update:model-value="updateValue">
+                    :ignore-filter="true"
+                    @update:model-value="updateValue"
+                    @update:open="
+                        (value: boolean) => {
+                            if (!value) open = false;
+                        }
+                    ">
                     <ComboboxAnchor>
                         <ComboboxInput
                             ref="searchInput"
-                            class="bg-card-background border-0 placeholder-muted text-sm text-text-primary py-2.5 focus:ring-0 border-b border-card-background-separator focus:border-card-background-separator w-full"
+                            v-model="searchValue"
+                            class="bg-transparent border-0 placeholder-muted-foreground text-sm text-popover-foreground py-2 px-3 focus:ring-0 border-b border-popover-border focus:border-popover-border w-full"
                             placeholder="Search for a client..." />
                     </ComboboxAnchor>
                     <ComboboxContent>
-                        <ComboboxViewport class="w-60 max-h-60 overflow-y-scroll">
-                            <ComboboxItem
-                                :value="{ id: null, name: 'No Client' }"
-                                class="data-[highlighted]:bg-card-background-active">
-                                <ClientDropdownItem :selected="model === null" name="No Client" />
-                            </ComboboxItem>
-                            <ComboboxItem
-                                v-for="client in filteredClients"
-                                :key="client.id"
-                                :value="client"
-                                class="data-[highlighted]:bg-card-background-active"
-                                :data-client-id="client.id">
-                                <ClientDropdownItem
-                                    :selected="isClientSelected(client.id)"
-                                    :name="client.name" />
-                            </ComboboxItem>
-                            <div
-                                v-if="searchValue.length > 0 && filteredClients.length === 0"
-                                class="bg-card-background-active">
-                                <div
-                                    class="flex space-x-3 items-center px-4 py-3 text-xs text-text-primary font-medium border-t rounded-b-lg border-card-background-separator"
-                                    @click="addClientIfNoneExists">
-                                    <PlusCircleIcon class="w-5 flex-shrink-0" />
-                                    <span>Add "{{ searchValue }}" as a new Client</span>
-                                </div>
-                            </div>
+                        <ComboboxViewport
+                            class="w-[--reka-popper-anchor-width] max-h-60 overflow-y-scroll p-1">
+                            <ComboboxVirtualizer
+                                v-slot="{ option: row }"
+                                :options="clientRows"
+                                :estimate-size="32"
+                                :text-content="clientRowName">
+                                <ComboboxItem
+                                    :value="row"
+                                    class="relative flex w-full cursor-default select-none items-center rounded-sm py-1.5 pl-2 pr-8 text-sm outline-none data-[highlighted]:bg-accent data-[highlighted]:text-accent-foreground"
+                                    :data-client-id="row.id">
+                                    <span class="min-w-0 flex-1 truncate">{{ row.name }}</span>
+                                    <span
+                                        v-if="model === row.id"
+                                        class="absolute right-2 flex h-3.5 w-3.5 items-center justify-center">
+                                        <Check class="h-4 w-4" />
+                                    </span>
+                                </ComboboxItem>
+                            </ComboboxVirtualizer>
                         </ComboboxViewport>
+                        <div
+                            v-if="searchValue.length > 0 && filteredClients.length === 0"
+                            class="flex items-center gap-2 rounded-sm mx-1 px-2 py-1.5 text-sm cursor-pointer hover:bg-accent hover:text-accent-foreground"
+                            @click="addClientIfNoneExists">
+                            <Plus class="h-4 w-4 shrink-0" />
+                            <span>Add "{{ searchValue }}" as a new Client</span>
+                        </div>
                     </ComboboxContent>
                 </ComboboxRoot>
-            </UseFocusTrap>
+            </div>
         </template>
     </Dropdown>
 </template>

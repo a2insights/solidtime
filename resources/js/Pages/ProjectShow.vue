@@ -1,11 +1,12 @@
 <script setup lang="ts">
+import UpgradeLockedBadge from '@/packages/ui/src/UpgradeLockedBadge.vue';
+import { canUseBillableRates } from '@/utils/billing';
 import MainContainer from '@/packages/ui/src/MainContainer.vue';
 import AppLayout from '@/Layouts/AppLayout.vue';
-import { FolderIcon, PlusIcon } from '@heroicons/vue/16/solid';
+import { FolderIcon, PlusIcon } from '@heroicons/vue/20/solid';
 import SecondaryButton from '@/packages/ui/src/Buttons/SecondaryButton.vue';
-import { computed, onMounted, ref, inject, type ComputedRef } from 'vue';
-import { useProjectsStore } from '@/utils/useProjects';
-import { storeToRefs } from 'pinia';
+import { computed, ref } from 'vue';
+import { useProjectsQuery } from '@/utils/useProjectsQuery';
 import {
     ChevronRightIcon,
     CheckCircleIcon,
@@ -16,24 +17,26 @@ import {
 import { Link } from '@inertiajs/vue3';
 import TaskCreateModal from '@/Components/Common/Task/TaskCreateModal.vue';
 import TaskTable from '@/Components/Common/Task/TaskTable.vue';
+import type { SortColumn } from '@/Components/Common/Task/TaskTable.vue';
 import CardTitle from '@/packages/ui/src/CardTitle.vue';
 import Card from '@/Components/Common/Card.vue';
 import ProjectMemberTable from '@/Components/Common/ProjectMember/ProjectMemberTable.vue';
 import ProjectMemberCreateModal from '@/Components/Common/ProjectMember/ProjectMemberCreateModal.vue';
-import { useProjectMembersStore } from '@/utils/useProjectMembers';
+import { useProjectMembersQuery } from '@/utils/useProjectMembersQuery';
 import { canCreateProjects, canCreateTasks, canViewProjectMembers } from '@/utils/permissions';
-import TabBarItem from '@/Components/Common/TabBar/TabBarItem.vue';
-import TabBar from '@/Components/Common/TabBar/TabBar.vue';
-import { useTasksStore } from '@/utils/useTasks';
+import { TabBar, TabBarItem } from '@/packages/ui/src';
+import { useTasksQuery } from '@/utils/useTasksQuery';
 import ProjectEditModal from '@/Components/Common/Project/ProjectEditModal.vue';
 import { Badge } from '@/packages/ui/src';
 import { formatCents } from '../packages/ui/src/utils/money';
 import { getOrganizationCurrencyString } from '../utils/money';
-import type { Organization } from '@/packages/api/src';
+import { useOrganizationQuery } from '@/utils/useOrganizationQuery';
+import { getCurrentOrganizationId } from '@/utils/useUser';
+import { useTableSortState } from '@/utils/useTableSortState';
 
-const { projects } = storeToRefs(useProjectsStore());
+const { projects } = useProjectsQuery();
 
-const organization = inject<ComputedRef<Organization>>('organization');
+const { organization } = useOrganizationQuery(getCurrentOrganizationId()!);
 
 const project = computed(() => {
     return projects.value.find((project) => project.id === route().params.project) ?? null;
@@ -42,20 +45,34 @@ const createTask = ref(false);
 const createProjectMember = ref(false);
 const projectId = route()?.params?.project as string;
 
-const { projectMembers } = storeToRefs(useProjectMembersStore());
-
-onMounted(() => {
-    if (canViewProjectMembers()) {
-        useProjectMembersStore().fetchProjectMembers(projectId);
-    }
-    useTasksStore().fetchTasks();
-});
+// TanStack Query automatically fetches project members when component mounts
+const { projectMembers } = canViewProjectMembers()
+    ? useProjectMembersQuery(projectId)
+    : { projectMembers: computed(() => []) };
 
 const showEditProjectModal = ref(false);
 
+const billableRateFormatted = computed(() => {
+    if (project.value?.billable_rate) {
+        return formatCents(
+            project.value.billable_rate,
+            getOrganizationCurrencyString(),
+            organization.value?.currency_format,
+            organization.value?.currency_symbol,
+            organization.value?.number_format
+        );
+    }
+    return null;
+});
+
 const activeTab = ref<'active' | 'done'>('active');
 
-const { tasks } = storeToRefs(useTasksStore());
+const { tasks } = useTasksQuery();
+
+const { tableState, handleSort } = useTableSortState<SortColumn>('task-table-state', {
+    sortColumn: 'name',
+    sortDirection: 'asc',
+});
 
 const shownTasks = computed(() => {
     return tasks.value.filter((task) => {
@@ -65,6 +82,9 @@ const shownTasks = computed(() => {
         return task.project_id === projectId && task.is_done;
     });
 });
+
+// Note: The page sits above the app layout that provides the lock, so it can not inject it
+const billableRatesLocked = computed(() => !canUseBillableRates());
 </script>
 
 <template>
@@ -75,9 +95,11 @@ const shownTasks = computed(() => {
                 <ol role="list" class="flex items-center space-x-2">
                     <li>
                         <div class="flex items-center space-x-6">
-                            <Link :href="route('projects')" class="flex items-center space-x-2.5">
-                                <FolderIcon class="w-6 text-icon-default"></FolderIcon>
-                                <span class="font-medium">Projects</span>
+                            <Link
+                                :href="route('projects')"
+                                class="flex items-center space-x-2 sm:space-x-2.5">
+                                <FolderIcon class="w-5 text-icon-default"></FolderIcon>
+                                <span class="text-sm sm:text-base font-medium">Projects</span>
                             </Link>
                         </div>
                     </li>
@@ -99,23 +121,22 @@ const shownTasks = computed(() => {
                         </div>
                     </li>
                 </ol>
-                <div class="px-4">
-                    <Badge v-if="project?.billable_rate">
-                        {{
-                            formatCents(
-                                project?.billable_rate ?? 0,
-                                getOrganizationCurrencyString(),
-                                organization?.currency_format,
-                                organization?.currency_symbol,
-                                organization?.number_format
-                            )
-                        }}
+                <div class="px-4 space-x-1">
+                    <UpgradeLockedBadge v-if="billableRatesLocked"
+                        >Billable Rates</UpgradeLockedBadge
+                    >
+                    <Badge v-else-if="project?.billable_rate">
+                        {{ billableRateFormatted }}
                         / h
                     </Badge>
-                    <Badge v-if="project?.is_billable && !project?.billable_rate">
+                    <Badge
+                        v-if="
+                            project?.is_billable && !project?.billable_rate && !billableRatesLocked
+                        ">
                         Default Rate
                     </Badge>
                     <Badge v-if="!project?.is_billable"> Non-Billable </Badge>
+                    <Badge>{{ project?.is_public ? 'Public' : 'Private' }}</Badge>
                 </div>
             </nav>
             <div>
@@ -156,7 +177,12 @@ const shownTasks = computed(() => {
                         </template>
                     </CardTitle>
                     <Card>
-                        <TaskTable :tasks="shownTasks" :project-id="projectId"></TaskTable>
+                        <TaskTable
+                            :tasks="shownTasks"
+                            :project-id="projectId"
+                            :sort-column="tableState.sortColumn"
+                            :sort-direction="tableState.sortDirection"
+                            @sort="handleSort"></TaskTable>
                     </Card>
                 </div>
                 <div v-if="canViewProjectMembers()">

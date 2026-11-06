@@ -20,6 +20,7 @@ use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use InvalidArgumentException;
 
 class TimeEntryAggregationService
 {
@@ -62,11 +63,13 @@ class TimeEntryAggregationService
                 ') AS tag(tag)'
             ));
         }
+        $group1Bindings = [];
+        $group2Bindings = [];
         if ($group1Type !== null) {
-            $group1Select = $this->getGroupByQuery($group1Type, $timezone, $startOfWeek);
+            ['sql' => $group1Select, 'bindings' => $group1Bindings] = $this->getGroupByQuery($group1Type, $timezone, $startOfWeek);
             $groupBy = ['group_1'];
             if ($group2Type !== null) {
-                $group2Select = $this->getGroupByQuery($group2Type, $timezone, $startOfWeek);
+                ['sql' => $group2Select, 'bindings' => $group2Bindings] = $this->getGroupByQuery($group2Type, $timezone, $startOfWeek);
                 $groupBy = ['group_1', 'group_2'];
             }
         }
@@ -74,11 +77,14 @@ class TimeEntryAggregationService
         $startRawSelect = app(TimeEntryService::class)->getStartSelectRawForRounding($roundingType, $roundingMinutes);
         $endRawSelect = app(TimeEntryService::class)->getEndSelectRawForRounding($roundingType, $roundingMinutes);
 
+        // SQL fragments come from enum cases, integer offsets, and formatted dates. Timezone and week start are bound.
+        // Note: GROUP BY must use the aliases, since the bound expressions would not be recognized as identical by PostgreSQL.
         $timeEntriesQuery->selectRaw(
-            ($group1Select !== null ? $group1Select.' as group_1,' : '').
+            ($group1Select !== null ? $group1Select.' as group_1,' : ''). // @phpstan-ignore argument.type
             ($group2Select !== null ? $group2Select.' as group_2,' : '').
             ' round(sum(extract(epoch from ('.$endRawSelect.' - '.$startRawSelect.')))) as aggregate,'.
-            ' round(sum(extract(epoch from ('.$endRawSelect.' - '.$startRawSelect.')) * (coalesce(billable_rate, 0)::float/60/60))) as cost'
+            ' round(sum(extract(epoch from ('.$endRawSelect.' - '.$startRawSelect.')) * (coalesce(billable_rate, 0)::float/60/60))) as cost',
+            [...$group1Bindings, ...$group2Bindings]
         );
         if ($groupBy !== null) {
             $timeEntriesQuery->groupBy($groupBy);
@@ -104,9 +110,10 @@ class TimeEntryAggregationService
                 $baseTotalsPerGroup1Query = $baseTotalsQuery->clone();
                 $baseTotalsPerGroup1 = $baseTotalsPerGroup1Query
                     ->selectRaw(
-                        $group1Select.' as group_1,'.
+                        $group1Select.' as group_1,'. // @phpstan-ignore argument.type
                         ' round(sum(extract(epoch from ('.$endRawSelect.' - '.$startRawSelect.')))) as aggregate,'.
-                        ' round(sum(extract(epoch from ('.$endRawSelect.' - '.$startRawSelect.')) * (coalesce(billable_rate, 0)::float/60/60))) as cost'
+                        ' round(sum(extract(epoch from ('.$endRawSelect.' - '.$startRawSelect.')) * (coalesce(billable_rate, 0)::float/60/60))) as cost',
+                        $group1Bindings
                     )
                     ->groupBy('group_1')
                     ->get();
@@ -169,7 +176,7 @@ class TimeEntryAggregationService
                 // Reset selects and ordering on the cloned base query
                 $baseTotals = $baseTotalsQuery
                     ->selectRaw(
-                        ' round(sum(extract(epoch from ('.$endRawSelect.' - '.$startRawSelect.')))) as aggregate,'.
+                        ' round(sum(extract(epoch from ('.$endRawSelect.' - '.$startRawSelect.')))) as aggregate,'. // @phpstan-ignore argument.type
                         ' round(sum(extract(epoch from ('.$endRawSelect.' - '.$startRawSelect.')) * (coalesce(billable_rate, 0)::float/60/60))) as cost'
                     )
                     ->first();
@@ -353,6 +360,13 @@ class TimeEntryAggregationService
                     'color' => null,
                 ];
             }
+        } elseif ($type === TimeEntryAggregationType::Type) {
+            foreach ($keys as $key) {
+                $descriptorMap[$key] = [
+                    'description' => $key === 'break' ? 'Break' : 'Work time',
+                    'color' => null,
+                ];
+            }
         } elseif ($type === TimeEntryAggregationType::Tag) {
             $tags = Tag::query()
                 ->whereIn('id', $keys)
@@ -401,6 +415,9 @@ class TimeEntryAggregationService
     {
         $interval = $groupType->toInterval();
         if ($interval === null) {
+            if ($subGroupType === null) {
+                return $data;
+            }
             foreach ($data as $key => $item) {
                 $data[$key]['grouped_data'] = $this->fillGapsInTimeGroups(
                     $item['grouped_data'],
@@ -475,40 +492,49 @@ class TimeEntryAggregationService
         }
     }
 
-    private function getGroupByQuery(TimeEntryAggregationType $group, string $timezone, Weekday $startOfWeek): string
+    /**
+     * @return array{sql: literal-string, bindings: list<string|int>}
+     */
+    private function getGroupByQuery(TimeEntryAggregationType $group, string $timezone, Weekday $startOfWeek): array
     {
-        $timezoneShift = app(TimezoneService::class)->getShiftFromUtc(new CarbonTimeZone($timezone));
-        if ($timezoneShift > 0) {
-            $dateWithTimeZone = 'start + INTERVAL \''.$timezoneShift.' second\'';
-        } elseif ($timezoneShift < 0) {
-            $dateWithTimeZone = 'start - INTERVAL \''.abs($timezoneShift).' second\'';
-        } else {
-            $dateWithTimeZone = 'start';
+        $column = match ($group) {
+            TimeEntryAggregationType::User => 'user_id',
+            TimeEntryAggregationType::Project => 'project_id',
+            TimeEntryAggregationType::Task => 'task_id',
+            TimeEntryAggregationType::Client => 'client_id',
+            TimeEntryAggregationType::Billable => 'billable',
+            TimeEntryAggregationType::Type => 'type',
+            TimeEntryAggregationType::Description => 'description',
+            TimeEntryAggregationType::Tag => 'tag',
+            default => null,
+        };
+        if ($column !== null) {
+            return ['sql' => $column, 'bindings' => []];
         }
-        $startOfWeek = Carbon::now()->setTimezone($timezone)->startOfWeek($startOfWeek->carbonWeekDay())->toDateTimeString();
-        if ($group === TimeEntryAggregationType::Day) {
-            return 'date('.$dateWithTimeZone.')';
-        } elseif ($group === TimeEntryAggregationType::Week) {
-            return "to_char(date_bin('7 days', ".$dateWithTimeZone.", timestamp '".$startOfWeek."'), 'YYYY-MM-DD')";
-        } elseif ($group === TimeEntryAggregationType::Month) {
-            return 'to_char('.$dateWithTimeZone.', \'YYYY-MM\')';
-        } elseif ($group === TimeEntryAggregationType::Year) {
-            return 'to_char('.$dateWithTimeZone.', \'YYYY\')';
-        } elseif ($group === TimeEntryAggregationType::User) {
-            return 'user_id';
-        } elseif ($group === TimeEntryAggregationType::Project) {
-            return 'project_id';
-        } elseif ($group === TimeEntryAggregationType::Task) {
-            return 'task_id';
-        } elseif ($group === TimeEntryAggregationType::Client) {
-            return 'client_id';
-        } elseif ($group === TimeEntryAggregationType::Billable) {
-            return 'billable';
-        } elseif ($group === TimeEntryAggregationType::Description) {
-            return 'description';
-        } elseif ($group === TimeEntryAggregationType::Tag) {
-            return 'tag';
-        }
+
+        $localStart = app(TimezoneService::class)->getLocalDateTimeSqlExpression('start', new CarbonTimeZone($timezone));
+
+        return match ($group) {
+            TimeEntryAggregationType::Day => [
+                'sql' => 'date('.$localStart['sql'].')',
+                'bindings' => $localStart['bindings'],
+            ],
+            TimeEntryAggregationType::Week => [
+                'sql' => "to_char(date_bin('7 days', ".$localStart['sql'].', CAST(? AS timestamp)), \'YYYY-MM-DD\')',
+                'bindings' => [
+                    ...$localStart['bindings'],
+                    Carbon::now()->setTimezone($timezone)->startOfWeek($startOfWeek->carbonWeekDay())->toDateTimeString(),
+                ],
+            ],
+            TimeEntryAggregationType::Month => [
+                'sql' => 'to_char('.$localStart['sql'].', \'YYYY-MM\')',
+                'bindings' => $localStart['bindings'],
+            ],
+            TimeEntryAggregationType::Year => [
+                'sql' => 'to_char('.$localStart['sql'].', \'YYYY\')',
+                'bindings' => $localStart['bindings'],
+            ],
+        };
     }
 
     /**
@@ -517,7 +543,7 @@ class TimeEntryAggregationService
     public function timeSlotsBetween(Carbon $start, Carbon $end, string $timezone, Weekday $startOfWeek, TimeEntryAggregationTypeInterval $interval, string $format): Collection
     {
         if ($start->gt($end)) {
-            throw new \InvalidArgumentException('Start date must be before end date');
+            throw new InvalidArgumentException('Start date must be before end date');
         }
         $slots = new Collection;
         $current = $start->copy()->timezone($timezone);
@@ -530,7 +556,7 @@ class TimeEntryAggregationService
         } elseif ($interval === TimeEntryAggregationTypeInterval::Year) {
             $current->startOfYear();
         } else {
-            throw new \InvalidArgumentException('Invalid interval');
+            throw new InvalidArgumentException('Invalid interval');
         }
 
         while ($current->lt($end)) {

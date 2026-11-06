@@ -1,26 +1,25 @@
 <script setup lang="ts">
 import MainContainer from '@/packages/ui/src/MainContainer.vue';
 import AppLayout from '@/Layouts/AppLayout.vue';
-import { FolderIcon } from '@heroicons/vue/16/solid';
 import PageTitle from '@/Components/Common/PageTitle.vue';
 import {
     ChartBarIcon,
-    UserGroupIcon,
-    CheckCircleIcon,
-    TagIcon,
-    ChevronLeftIcon,
-    ChevronDoubleLeftIcon,
-    ChevronRightIcon,
-    ChevronDoubleRightIcon,
     ClockIcon,
+    EllipsisVerticalIcon,
+    ArrowDownTrayIcon,
+    LockClosedIcon,
 } from '@heroicons/vue/20/solid';
-import DateRangePicker from '@/packages/ui/src/Input/DateRangePicker.vue';
-import BillableIcon from '@/packages/ui/src/Icons/BillableIcon.vue';
-import ReportingRoundingControls from '@/Components/Common/Reporting/ReportingRoundingControls.vue';
+import Pagination from '@/packages/ui/src/Pagination.vue';
+import {
+    DropdownMenu,
+    DropdownMenuContent,
+    DropdownMenuItem,
+    DropdownMenuTrigger,
+} from '@/packages/ui/src';
+import { SecondaryButton } from '@/packages/ui/src';
 import { computed, onMounted, ref, watch } from 'vue';
 import { getDayJsInstance, getLocalizedDayJs } from '@/packages/ui/src/utils/time';
 import { storeToRefs } from 'pinia';
-import TagDropdown from '@/packages/ui/src/Tag/TagDropdown.vue';
 import {
     api,
     type Client,
@@ -28,51 +27,41 @@ import {
     type CreateProjectBody,
     type Project,
     type TimeEntry,
-    type TimeEntryResponse,
 } from '@/packages/api/src';
-import ReportingFilterBadge from '@/Components/Common/Reporting/ReportingFilterBadge.vue';
-import ProjectMultiselectDropdown from '@/Components/Common/Project/ProjectMultiselectDropdown.vue';
-import MemberMultiselectDropdown from '@/Components/Common/Member/MemberMultiselectDropdown.vue';
-import TaskMultiselectDropdown from '@/Components/Common/Task/TaskMultiselectDropdown.vue';
-import SelectDropdown from '@/packages/ui/src/Input/SelectDropdown.vue';
-import ClientMultiselectDropdown from '@/Components/Common/Client/ClientMultiselectDropdown.vue';
+import { useTagsQuery } from '@/utils/useTagsQuery';
 import { useTagsStore } from '@/utils/useTags';
 import { useSessionStorage } from '@vueuse/core';
 import TimeEntryRow from '@/packages/ui/src/TimeEntry/TimeEntryRow.vue';
 import { useCurrentTimeEntryStore } from '@/utils/useCurrentTimeEntry';
+import { useProjectsQuery } from '@/utils/useProjectsQuery';
 import { useProjectsStore } from '@/utils/useProjects';
-import { useTasksStore } from '@/utils/useTasks';
+import { useTasksQuery } from '@/utils/useTasksQuery';
+import { useClientsQuery } from '@/utils/useClientsQuery';
 import { useClientsStore } from '@/utils/useClients';
 import { getOrganizationCurrencyString } from '@/utils/money';
-import { useMembersStore } from '@/utils/useMembers';
-import {
-    PaginationEllipsis,
-    PaginationFirst,
-    PaginationLast,
-    PaginationList,
-    PaginationListItem,
-    PaginationNext,
-    PaginationPrev,
-    PaginationRoot,
-} from 'radix-vue';
-import { useQuery, useQueryClient } from '@tanstack/vue-query';
+import { useMembersQuery } from '@/utils/useMembersQuery';
+import { useQueryClient } from '@tanstack/vue-query';
 import { getCurrentOrganizationId, getCurrentMembershipId } from '@/utils/useUser';
-import { useTimeEntriesStore } from '@/utils/useTimeEntries';
 import ReportingTabNavbar from '@/Components/Common/Reporting/ReportingTabNavbar.vue';
-import ReportingExportButton from '@/Components/Common/Reporting/ReportingExportButton.vue';
+import UpgradeModal from '@/packages/ui/src/UpgradeModal.vue';
 import type { ExportFormat } from '@/types/reporting';
 import { useNotificationsStore } from '@/utils/notification';
 import TimeEntryMassActionRow from '@/packages/ui/src/TimeEntry/TimeEntryMassActionRow.vue';
 import { isAllowedToPerformPremiumAction } from '@/utils/billing';
 import { canCreateProjects, canViewAllTimeEntries } from '@/utils/permissions';
 import ReportingExportModal from '@/Components/Common/Reporting/ReportingExportModal.vue';
+import ReportingFilterBar from '@/Components/Common/Reporting/ReportingFilterBar.vue';
+import { useTimeEntriesReportQuery } from '@/utils/useTimeEntriesReportQuery';
+import { useTimeEntriesMutations } from '@/utils/useTimeEntriesMutations';
+import { useOrganizationQuery } from '@/utils/useOrganizationQuery';
+import type { TagMatchType } from '@/types/reporting';
 
 // TimeEntryRoundingType is now defined in ReportingRoundingControls component
 type TimeEntryRoundingType = 'up' | 'down' | 'nearest';
 
 const startDate = useSessionStorage<string>(
     'reporting-start-date',
-    getLocalizedDayJs(getDayJsInstance()().format()).subtract(14, 'd').format()
+    getLocalizedDayJs(getDayJsInstance()().format()).subtract(13, 'd').format()
 );
 const endDate = useSessionStorage<string>(
     'reporting-end-date',
@@ -83,12 +72,15 @@ const selectedProjects = ref<string[]>([]);
 const selectedMembers = ref<string[]>([]);
 const selectedTasks = ref<string[]>([]);
 const selectedClients = ref<string[]>([]);
+const tagMatchType = ref<TagMatchType>('contains');
 const billable = ref<'true' | 'false' | null>(null);
+const entryType = ref<'work' | 'break' | null>('work');
 const roundingEnabled = ref<boolean>(false);
 const roundingType = ref<TimeEntryRoundingType>('nearest');
 const roundingMinutes = ref<number>(15);
 
-const { members } = storeToRefs(useMembersStore());
+const { members } = useMembersQuery();
+const { organization } = useOrganizationQuery(getCurrentOrganizationId()!);
 const pageLimit = 15;
 
 // Watch rounding enabled state to trigger updates
@@ -113,7 +105,9 @@ function getFilterAttributes() {
         task_ids: selectedTasks.value.length > 0 ? selectedTasks.value : undefined,
         client_ids: selectedClients.value.length > 0 ? selectedClients.value : undefined,
         tag_ids: selectedTags.value.length > 0 ? selectedTags.value : undefined,
+        tag_match_type: selectedTags.value.length > 0 ? tagMatchType.value : undefined,
         billable: billable.value !== null ? billable.value : undefined,
+        type: entryType.value !== null ? entryType.value : undefined,
         rounding_type: roundingEnabled.value ? roundingType.value : undefined,
         rounding_minutes: roundingEnabled.value ? roundingMinutes.value : undefined,
     };
@@ -124,30 +118,32 @@ const currentTimeEntryStore = useCurrentTimeEntryStore();
 const { currentTimeEntry } = storeToRefs(currentTimeEntryStore);
 const { setActiveState, startLiveTimer } = currentTimeEntryStore;
 const { handleApiRequestNotifications } = useNotificationsStore();
-const { createTimeEntry, updateTimeEntry, updateTimeEntries } = useTimeEntriesStore();
 
-const { tags } = storeToRefs(useTagsStore());
+const {
+    createTimeEntry,
+    updateTimeEntry,
+    updateTimeEntries: updateTimeEntriesMutation,
+    deleteTimeEntries: deleteTimeEntriesMutation,
+} = useTimeEntriesMutations();
 
-const { data: timeEntryResponse } = useQuery<TimeEntryResponse>({
-    queryKey: ['timeEntry', 'detailed-report'],
-    enabled: !!getCurrentOrganizationId(),
-    queryFn: () =>
-        api.getTimeEntries({
-            params: {
-                organization: getCurrentOrganizationId() || '',
-            },
-            queries: { ...getFilterAttributes() },
-        }),
-});
+async function updateTimeEntries(
+    ids: string[],
+    changes: Parameters<typeof updateTimeEntriesMutation>[0]['changes']
+) {
+    await updateTimeEntriesMutation({ ids, changes });
+}
+
+const { tags } = useTagsQuery();
+
+const filterParams = computed(() => getFilterAttributes());
+const { data: timeEntryResponse } = useTimeEntriesReportQuery(filterParams);
 
 const totalPages = computed(() => {
     return timeEntryResponse?.value?.meta?.total ?? 1;
 });
 
-const timeEntriesStore = useTimeEntriesStore();
-
 async function deleteTimeEntries(timeEntries: TimeEntry[]) {
-    await timeEntriesStore.deleteTimeEntries(timeEntries);
+    await deleteTimeEntriesMutation(timeEntries);
     selectedTimeEntries.value = [];
     await updateFilteredTimeEntries();
 }
@@ -160,17 +156,27 @@ onMounted(async () => {
     await updateFilteredTimeEntries();
 });
 
-const projectStore = useProjectsStore();
-const { projects } = storeToRefs(projectStore);
-const taskStore = useTasksStore();
-const { tasks } = storeToRefs(taskStore);
-const clientStore = useClientsStore();
-const { clients } = storeToRefs(clientStore);
+const { projects } = useProjectsQuery();
+const { tasks } = useTasksQuery();
+const { clients } = useClientsQuery();
 
 const selectedTimeEntries = ref<TimeEntry[]>([]);
 
 const showExportModal = ref(false);
 const exportUrl = ref<string | null>(null);
+const showPremiumModal = ref(false);
+const exportLoading = ref(false);
+
+function triggerExport(format: ExportFormat) {
+    if (format === 'pdf' && !isAllowedToPerformPremiumAction()) {
+        showPremiumModal.value = true;
+        return;
+    }
+    exportLoading.value = true;
+    downloadExport(format).finally(() => {
+        exportLoading.value = false;
+    });
+}
 
 async function createTag(name: string) {
     return await useTagsStore().createTag(name);
@@ -203,7 +209,7 @@ async function startTimeEntryFromExisting(entry: TimeEntry) {
 const queryClient = useQueryClient();
 async function updateFilteredTimeEntries() {
     await queryClient.invalidateQueries({
-        queryKey: ['timeEntry', 'detailed-report'],
+        queryKey: ['timeEntries', 'detailed-report'],
     });
 }
 watch(currentPage, () => {
@@ -247,117 +253,89 @@ async function downloadExport(format: ExportFormat) {
         <ReportingExportModal
             v-model:show="showExportModal"
             :export-url="exportUrl"></ReportingExportModal>
+        <UpgradeModal v-model:show="showPremiumModal" feature="pdf-reports" />
         <MainContainer
-            class="py-3 sm:py-5 border-b border-default-background-separator flex justify-between items-center">
+            class="h-14 sm:h-16 border-b border-default-background-separator flex flex-wrap gap-y-3 justify-between items-center">
             <div class="flex items-center space-x-3 sm:space-x-6">
                 <PageTitle :icon="ChartBarIcon" title="Reporting"></PageTitle>
-                <ReportingTabNavbar active="detailed"></ReportingTabNavbar>
+                <ReportingTabNavbar active="detailed" class="hidden sm:flex"></ReportingTabNavbar>
             </div>
-            <ReportingExportButton :download="downloadExport"></ReportingExportButton>
+            <div class="hidden sm:block">
+                <DropdownMenu>
+                    <DropdownMenuTrigger as-child>
+                        <SecondaryButton :icon="ArrowDownTrayIcon" :loading="exportLoading">
+                            Export
+                        </SecondaryButton>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                        <DropdownMenuItem @click="triggerExport('pdf')">
+                            <div class="flex items-center space-x-2">
+                                <span>Export as PDF</span>
+                                <LockClosedIcon
+                                    v-if="!isAllowedToPerformPremiumAction()"
+                                    class="w-3.5 text-text-tertiary" />
+                            </div>
+                        </DropdownMenuItem>
+                        <DropdownMenuItem @click="triggerExport('xlsx')">
+                            Export as Excel
+                        </DropdownMenuItem>
+                        <DropdownMenuItem @click="triggerExport('csv')">
+                            Export as CSV
+                        </DropdownMenuItem>
+                        <DropdownMenuItem @click="triggerExport('ods')">
+                            Export as ODS
+                        </DropdownMenuItem>
+                    </DropdownMenuContent>
+                </DropdownMenu>
+            </div>
+            <DropdownMenu>
+                <DropdownMenuTrigger as-child class="sm:hidden">
+                    <button
+                        class="p-1.5 rounded-lg border border-border-tertiary text-text-secondary hover:text-text-primary hover:bg-secondary transition"
+                        aria-label="More options">
+                        <EllipsisVerticalIcon class="w-5 h-5" />
+                    </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                    <DropdownMenuItem @click="triggerExport('pdf')">
+                        <div class="flex items-center space-x-2">
+                            <span>Export as PDF</span>
+                            <LockClosedIcon
+                                v-if="!isAllowedToPerformPremiumAction()"
+                                class="w-3.5 text-text-tertiary" />
+                        </div>
+                    </DropdownMenuItem>
+                    <DropdownMenuItem @click="triggerExport('xlsx')">
+                        Export as Excel
+                    </DropdownMenuItem>
+                    <DropdownMenuItem @click="triggerExport('csv')">
+                        Export as CSV
+                    </DropdownMenuItem>
+                    <DropdownMenuItem @click="triggerExport('ods')">
+                        Export as ODS
+                    </DropdownMenuItem>
+                </DropdownMenuContent>
+            </DropdownMenu>
+        </MainContainer>
+        <MainContainer class="sm:hidden py-2 border-b border-default-background-separator">
+            <ReportingTabNavbar active="detailed"></ReportingTabNavbar>
         </MainContainer>
 
-        <div class="py-2.5 w-full border-b border-default-background-separator">
-            <MainContainer class="sm:flex space-y-4 sm:space-y-0 justify-between">
-                <div class="flex flex-wrap items-center space-y-2 sm:space-y-0 space-x-3">
-                    <div class="text-sm font-medium">Filters</div>
-                    <MemberMultiselectDropdown
-                        v-model="selectedMembers"
-                        @submit="updateFilteredTimeEntries">
-                        <template #trigger>
-                            <ReportingFilterBadge
-                                :count="selectedMembers.length"
-                                :active="selectedMembers.length > 0"
-                                title="Members"
-                                :icon="UserGroupIcon"></ReportingFilterBadge>
-                        </template>
-                    </MemberMultiselectDropdown>
-                    <ProjectMultiselectDropdown
-                        v-model="selectedProjects"
-                        @submit="updateFilteredTimeEntries">
-                        <template #trigger>
-                            <ReportingFilterBadge
-                                :count="selectedProjects.length"
-                                :active="selectedProjects.length > 0"
-                                title="Projects"
-                                :icon="FolderIcon"></ReportingFilterBadge>
-                        </template>
-                    </ProjectMultiselectDropdown>
-                    <TaskMultiselectDropdown
-                        v-model="selectedTasks"
-                        @submit="updateFilteredTimeEntries">
-                        <template #trigger>
-                            <ReportingFilterBadge
-                                :count="selectedTasks.length"
-                                :active="selectedTasks.length > 0"
-                                title="Tasks"
-                                :icon="CheckCircleIcon"></ReportingFilterBadge>
-                        </template>
-                    </TaskMultiselectDropdown>
-                    <ClientMultiselectDropdown
-                        v-model="selectedClients"
-                        @submit="updateFilteredTimeEntries">
-                        <template #trigger>
-                            <ReportingFilterBadge
-                                :count="selectedClients.length"
-                                :active="selectedClients.length > 0"
-                                title="Clients"
-                                :icon="FolderIcon"></ReportingFilterBadge>
-                        </template>
-                    </ClientMultiselectDropdown>
-                    <TagDropdown
-                        v-model="selectedTags"
-                        :create-tag
-                        :tags="tags"
-                        @submit="updateFilteredTimeEntries">
-                        <template #trigger>
-                            <ReportingFilterBadge
-                                :count="selectedTags.length"
-                                :active="selectedTags.length > 0"
-                                title="Tags"
-                                :icon="TagIcon"></ReportingFilterBadge>
-                        </template>
-                    </TagDropdown>
-
-                    <SelectDropdown
-                        v-model="billable"
-                        :get-key-from-item="(item) => item.value"
-                        :get-name-for-item="(item) => item.label"
-                        :items="[
-                            {
-                                label: 'Both',
-                                value: null,
-                            },
-                            {
-                                label: 'Billable',
-                                value: 'true',
-                            },
-                            {
-                                label: 'Non Billable',
-                                value: 'false',
-                            },
-                        ]"
-                        @changed="updateFilteredTimeEntries">
-                        <template #trigger>
-                            <ReportingFilterBadge
-                                :active="billable !== null"
-                                :title="billable === 'false' ? 'Non Billable' : 'Billable'"
-                                :icon="BillableIcon"></ReportingFilterBadge>
-                        </template>
-                    </SelectDropdown>
-                    <ReportingRoundingControls
-                        v-model:enabled="roundingEnabled"
-                        v-model:type="roundingType"
-                        v-model:minutes="roundingMinutes"
-                        @change="updateFilteredTimeEntries" />
-                </div>
-                <div>
-                    <DateRangePicker
-                        v-model:start="startDate"
-                        v-model:end="endDate"
-                        @submit="updateFilteredTimeEntries"></DateRangePicker>
-                </div>
-            </MainContainer>
-        </div>
+        <ReportingFilterBar
+            v-model:selected-members="selectedMembers"
+            v-model:selected-projects="selectedProjects"
+            v-model:selected-tasks="selectedTasks"
+            v-model:selected-clients="selectedClients"
+            v-model:selected-tags="selectedTags"
+            v-model:tag-match-type="tagMatchType"
+            v-model:billable="billable"
+            v-model:entry-type="entryType"
+            v-model:rounding-enabled="roundingEnabled"
+            v-model:rounding-type="roundingType"
+            v-model:rounding-minutes="roundingMinutes"
+            v-model:start-date="startDate"
+            v-model:end-date="endDate"
+            @submit="updateFilteredTimeEntries" />
         <TimeEntryMassActionRow
             :selected-time-entries="selectedTimeEntries"
             :can-create-project="canCreateProjects()"
@@ -369,6 +347,7 @@ async function downloadExport(format: ExportFormat) {
             :tags="tags"
             :currency="getOrganizationCurrencyString()"
             :clients="clients"
+            :organization-billable-rate="organization?.billable_rate ?? null"
             class="border-b border-default-background-separator"
             :update-time-entries="
                 (args) =>
@@ -386,7 +365,7 @@ async function downloadExport(format: ExportFormat) {
         <div class="w-full relative @container">
             <div v-for="entry in timeEntries" :key="entry.id">
                 <TimeEntryRow
-                    :selected="selectedTimeEntries.includes(entry)"
+                    :selected="selectedTimeEntries.some((item) => item.id === entry.id)"
                     :can-create-project="canCreateProjects()"
                     :create-client
                     :create-project
@@ -400,8 +379,10 @@ async function downloadExport(format: ExportFormat) {
                     :on-start-stop-click="() => startTimeEntryFromExisting(entry)"
                     :delete-time-entry="() => deleteTimeEntries([entry])"
                     :currency="getOrganizationCurrencyString()"
+                    :organization-billable-rate="organization?.billable_rate ?? null"
                     :duplicate-time-entry="() => createTimeEntry(entry)"
                     :members="members"
+                    is-report
                     show-date
                     show-member
                     :time-entry="entry"
@@ -421,62 +402,6 @@ async function downloadExport(format: ExportFormat) {
             </div>
         </div>
 
-        <PaginationRoot
-            v-model:page="currentPage"
-            :total="totalPages"
-            :items-per-page="pageLimit"
-            class="flex justify-center items-center py-8"
-            :sibling-count="1"
-            show-edges>
-            <PaginationList v-slot="{ items }" class="flex items-center space-x-1 relative">
-                <div class="pr-2 flex items-center space-x-1 border-r border-border-primary mr-1">
-                    <PaginationFirst class="navigation-item">
-                        <ChevronDoubleLeftIcon class="w-4"> </ChevronDoubleLeftIcon>
-                    </PaginationFirst>
-                    <PaginationPrev class="mr-4 navigation-item">
-                        <ChevronLeftIcon class="w-4 text-text-tertiary hover:text-text-primary">
-                        </ChevronLeftIcon>
-                    </PaginationPrev>
-                </div>
-                <template v-for="(page, index) in items">
-                    <PaginationListItem
-                        v-if="page.type === 'page'"
-                        :key="index"
-                        class="pagination-item"
-                        :value="page.value">
-                        {{ page.value }}
-                    </PaginationListItem>
-                    <PaginationEllipsis
-                        v-else
-                        :key="page.type"
-                        :index="index"
-                        class="PaginationEllipsis">
-                        <div class="px-2">&#8230;</div>
-                    </PaginationEllipsis>
-                </template>
-                <div class="!ml-2 pl-2 flex items-center space-x-1 border-l border-border-primary">
-                    <PaginationNext class="navigation-item">
-                        <ChevronRightIcon
-                            class="w-4 text-text-tertiary hover:text-text-primary"></ChevronRightIcon>
-                    </PaginationNext>
-                    <PaginationLast class="navigation-item">
-                        <ChevronDoubleRightIcon
-                            class="w-4 text-text-tertiary hover:text-text-primary"></ChevronDoubleRightIcon>
-                    </PaginationLast>
-                </div>
-            </PaginationList>
-        </PaginationRoot>
+        <Pagination v-model:page="currentPage" :total="totalPages" :items-per-page="pageLimit" />
     </AppLayout>
 </template>
-<style lang="postcss">
-.navigation-item {
-    @apply bg-quaternary h-8 w-8 flex items-center justify-center rounded border border-border-primary text-text-tertiary hover:text-text-primary transition cursor-pointer hover:border-border-secondary hover:bg-secondary focus-visible:text-text-primary focus-visible:outline-0 focus-visible:ring-2 focus-visible:ring-ring;
-}
-
-.pagination-item {
-    @apply bg-secondary h-8 w-8 flex items-center justify-center rounded border border-border-tertiary text-text-secondary hover:text-text-primary transition cursor-pointer hover:border-border-secondary hover:bg-secondary focus-visible:text-text-primary focus-visible:outline-0 focus-visible:ring-2 focus-visible:ring-ring;
-}
-.pagination-item[data-selected] {
-    @apply text-text-primary bg-accent-300/10 border border-accent-300/20 rounded-md font-medium hover:bg-accent-300/20 active:bg-accent-300/20 outline-0 focus-visible:ring-2 focus:ring-ring transition ease-in-out duration-150;
-}
-</style>

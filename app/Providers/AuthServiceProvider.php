@@ -4,14 +4,15 @@ declare(strict_types=1);
 
 namespace App\Providers;
 
-use App\Models\Organization;
+use App\Auth\ActiveUserProvider;
 use App\Models\Passport\AuthCode;
 use App\Models\Passport\Client;
 use App\Models\Passport\RefreshToken;
 use App\Models\Passport\Token;
-use App\Policies\OrganizationPolicy;
+use Illuminate\Auth\AuthenticationException;
+use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Foundation\Support\Providers\AuthServiceProvider as ServiceProvider;
-use Laravel\Jetstream\Jetstream;
+use Illuminate\Support\Facades\Auth;
 use Laravel\Passport\Passport;
 
 class AuthServiceProvider extends ServiceProvider
@@ -22,14 +23,34 @@ class AuthServiceProvider extends ServiceProvider
      * @var array<class-string, class-string>
      */
     protected $policies = [
-        Organization::class => OrganizationPolicy::class,
     ];
+
+    public function register(): void
+    {
+        parent::register();
+
+        // The device authorization grant is not used and has no views. Passport registers its routes
+        // while booting, so the grant has to be disabled before that, during registration.
+        Passport::$deviceCodeGrantEnabled = false;
+    }
 
     /**
      * Register any authentication / authorization services.
      */
     public function boot(): void
     {
+        // Replaces the built-in eloquent user provider, so that no authentication flow can
+        // resolve a placeholder user. The driver name is kept, because Passport recognizes
+        // only providers that are configured with the driver "eloquent".
+        Auth::provider('eloquent', function (Application $app, array $config): ActiveUserProvider {
+            return new ActiveUserProvider($app->make('hash'), $config['model']);
+        });
+
+        // Passport's authorization endpoint prompts guests to log in by throwing an
+        // AuthenticationException without a redirect target. Since Laravel 13 such an
+        // exception renders as an empty 401 instead of falling back to the login route.
+        AuthenticationException::redirectUsing(fn (): string => route('login'));
+
         // define scopes for passport tokens
         Passport::tokensCan([
             'create' => 'Create resources',
@@ -56,11 +77,5 @@ class AuthServiceProvider extends ServiceProvider
         // Passport::tokensExpireIn(now()->addDays(15));
         // Passport::refreshTokensExpireIn(now()->addDays(30));
         Passport::personalAccessTokensExpireIn(now()->addMonths(12));
-
-        // same as passport default above
-        Jetstream::defaultApiTokenPermissions(['read']);
-
-        // use passport scopes for jetstream token permissions
-        Jetstream::permissions(Passport::scopeIds());
     }
 }

@@ -4,18 +4,19 @@ import DeleteTeamForm from '@/Pages/Teams/Partials/DeleteTeamForm.vue';
 import SectionBorder from '@/Components/SectionBorder.vue';
 import UpdateTeamNameForm from '@/Pages/Teams/Partials/UpdateTeamNameForm.vue';
 import type { Organization } from '@/types/models';
-import type { Permissions, Role } from '@/types/jetstream';
-import { canUpdateOrganization } from '@/utils/permissions';
+import type { Permissions } from '@/types/jetstream';
 import OrganizationBillableRate from '@/Pages/Teams/Partials/OrganizationBillableRate.vue';
 import OrganizationFormatSettings from '@/Pages/Teams/Partials/OrganizationFormatSettings.vue';
 import OrganizationTimeEntrySettings from '@/Pages/Teams/Partials/OrganizationTimeEntrySettings.vue';
+import OrganizationTrial from '@/Pages/Teams/Partials/OrganizationTrial.vue';
+import { isBillingActivated, isInTrial } from '@/utils/billing';
+import { canManageBilling } from '@/utils/permissions';
 import { onMounted, ref } from 'vue';
 import { useOrganizationStore } from '@/utils/useOrganization';
 import { storeToRefs } from 'pinia';
 
 defineProps<{
     team: Organization;
-    availableRoles: Role[];
     permissions: Permissions;
 }>();
 
@@ -45,17 +46,22 @@ onMounted(async () => {
                 <template v-else>
                     <UpdateTeamNameForm :team="team" :permissions="permissions" />
 
-                    <SectionBorder />
-                    <OrganizationBillableRate v-if="canUpdateOrganization()" :team="team" />
-                    <SectionBorder />
+                    <SectionBorder v-if="permissions.canUpdateTeam" />
+                    <OrganizationBillableRate v-if="permissions.canUpdateTeam" :team="team" />
 
-                    <OrganizationFormatSettings v-if="canUpdateOrganization()" :team="team" />
-                    <SectionBorder />
+                    <SectionBorder v-if="permissions.canUpdateTeam" />
+                    <OrganizationFormatSettings v-if="permissions.canUpdateTeam" :team="team" />
 
-                    <OrganizationTimeEntrySettings v-if="canUpdateOrganization()" />
-                    <SectionBorder />
+                    <SectionBorder v-if="permissions.canUpdateTeam" />
+                    <OrganizationTimeEntrySettings v-if="permissions.canUpdateTeam" />
 
-                    <template v-if="permissions.canDeleteTeam && !team.personal_team">
+                    <template v-if="isBillingActivated() && isInTrial() && canManageBilling()">
+                        <SectionBorder />
+                        <OrganizationTrial />
+                    </template>
+
+                    <template v-if="permissions.canDeleteTeam">
+                        <SectionBorder />
                         <DeleteTeamForm class="mt-10 sm:mt-0" :team="team" />
                     </template>
                 </template>

@@ -13,8 +13,10 @@ use App\Models\Tag;
 use App\Models\TimeEntry;
 use App\Service\TimeEntryAggregationService;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Log;
 use PHPUnit\Framework\Attributes\CoversClass;
 use Tests\TestCaseWithDatabase;
+use TiMacDonald\Log\LogEntry;
 
 #[CoversClass(TimeEntryAggregationService::class)]
 class TimeEntryAggregationServiceTest extends TestCaseWithDatabase
@@ -811,6 +813,99 @@ class TimeEntryAggregationServiceTest extends TestCaseWithDatabase
         ], $result);
     }
 
+    public function test_aggregate_time_entries_by_day_and_project_with_filled_gaps(): void
+    {
+        // Arrange
+        $project = Project::factory()->create();
+        TimeEntry::factory()->startWithDuration(Carbon::parse('2026-01-02 10:00:00', 'UTC'), 10)->forProject($project)->create();
+        $query = TimeEntry::query();
+
+        // Act
+        $result = $this->service->getAggregatedTimeEntries(
+            $query,
+            TimeEntryAggregationType::Day,
+            TimeEntryAggregationType::Project,
+            'UTC',
+            Weekday::Monday,
+            true,
+            Carbon::parse('2026-01-01 00:00:00', 'UTC'),
+            Carbon::parse('2026-01-02 23:59:59', 'UTC'),
+            true,
+            null,
+            null
+        );
+
+        // Assert
+        $this->assertSame([
+            'seconds' => 10,
+            'cost' => 0,
+            'grouped_type' => 'day',
+            'grouped_data' => [
+                [
+                    'key' => '2026-01-01',
+                    'seconds' => 0,
+                    'cost' => 0,
+                    'grouped_type' => 'project',
+                    'grouped_data' => [],
+                ],
+                [
+                    'key' => '2026-01-02',
+                    'seconds' => 10,
+                    'cost' => 0,
+                    'grouped_type' => 'project',
+                    'grouped_data' => [
+                        [
+                            'key' => $project->getKey(),
+                            'seconds' => 10,
+                            'cost' => 0,
+                            'grouped_type' => null,
+                            'grouped_data' => null,
+                        ],
+                    ],
+                ],
+            ],
+        ], $result);
+    }
+
+    public function test_aggregate_time_entries_by_project_with_filled_gaps(): void
+    {
+        // Arrange
+        $project = Project::factory()->create();
+        TimeEntry::factory()->startWithDuration(Carbon::parse('2026-01-02 10:00:00', 'UTC'), 10)->forProject($project)->create();
+        $query = TimeEntry::query();
+
+        // Act
+        $result = $this->service->getAggregatedTimeEntries(
+            $query,
+            TimeEntryAggregationType::Project,
+            null,
+            'UTC',
+            Weekday::Monday,
+            true,
+            Carbon::parse('2026-01-01 00:00:00', 'UTC'),
+            Carbon::parse('2026-01-02 23:59:59', 'UTC'),
+            true,
+            null,
+            null
+        );
+
+        // Assert
+        $this->assertSame([
+            'seconds' => 10,
+            'cost' => 0,
+            'grouped_type' => 'project',
+            'grouped_data' => [
+                [
+                    'key' => $project->getKey(),
+                    'seconds' => 10,
+                    'cost' => 0,
+                    'grouped_type' => null,
+                    'grouped_data' => null,
+                ],
+            ],
+        ], $result);
+    }
+
     public function test_aggregated_time_entries_with_descriptions_by_description_and_billable(): void
     {
         // Arrange
@@ -1204,5 +1299,272 @@ class TimeEntryAggregationServiceTest extends TestCaseWithDatabase
             ],
         ];
         $this->assertEqualsCanonicalizing($expected, $result);
+    }
+
+    /**
+     * Test that rounding up does NOT add extra time when the entry is already on a 15-minute boundary.
+     * f.e. 13:00 - 14:30 (90 minutes) should stay at 90 minutes when rounding up with 15-minute interval.
+     */
+    public function test_aggregate_time_round_up_does_not_add_time_when_already_on_boundary(): void
+    {
+        // Arrange
+        // Create a time entry with duration exactly on a 15-minute boundary (90 minutes = 5400 seconds)
+        // This simulates 13:00 - 14:30 (or any 90-minute entry)
+        $project = Project::factory()->create();
+        TimeEntry::factory()->startWithDuration(
+            Carbon::createFromFormat('Y-m-d H:i:s', '2020-01-01 13:00:00'),
+            5400 // 90 minutes = 1 hour 30 minutes, exactly on 15-minute boundary
+        )->forProject($project)->create();
+        $query = TimeEntry::query();
+
+        // Act
+        $result = $this->service->getAggregatedTimeEntries(
+            $query,
+            TimeEntryAggregationType::Project,
+            null,
+            'Europe/Vienna',
+            Weekday::Monday,
+            false,
+            null,
+            null,
+            true,
+            TimeEntryRoundingType::Up,
+            15
+        );
+
+        // Assert
+        // The entry is already on a 15-minute boundary (90 minutes), so it should stay at 90 minutes (5400 seconds)
+        $this->assertEqualsCanonicalizing([
+            'seconds' => 5400, // 90 minutes - should NOT be rounded to 105 minutes (6300 seconds)
+            'cost' => 0,
+            'grouped_type' => 'project',
+            'grouped_data' => [
+                [
+                    'key' => $project->getKey(),
+                    'seconds' => 5400, // 90 minutes
+                    'cost' => 0,
+                    'grouped_type' => null,
+                    'grouped_data' => null,
+                ],
+            ],
+        ], $result);
+    }
+
+    /**
+     * Test that rounding up works correctly for entries NOT on a boundary.
+     * Example: 13:00 - 13:48 (48 minutes) should round up to 13:00 - 14:00 (60 minutes).
+     */
+    public function test_aggregate_time_round_up_works_when_not_on_boundary(): void
+    {
+        // Arrange
+        // Create a time entry with duration NOT on a 15-minute boundary (48 minutes = 2880 seconds)
+        $project = Project::factory()->create();
+        TimeEntry::factory()->startWithDuration(
+            Carbon::createFromFormat('Y-m-d H:i:s', '2020-01-01 13:00:00'),
+            2880 // 48 minutes, not on 15-minute boundary
+        )->forProject($project)->create();
+        $query = TimeEntry::query();
+
+        // Act
+        $result = $this->service->getAggregatedTimeEntries(
+            $query,
+            TimeEntryAggregationType::Project,
+            null,
+            'Europe/Vienna',
+            Weekday::Monday,
+            false,
+            null,
+            null,
+            true,
+            TimeEntryRoundingType::Up,
+            15
+        );
+
+        // Assert
+        // 48 minutes rounded up to 15-minute interval = 60 minutes (3600 seconds)
+        $this->assertEqualsCanonicalizing([
+            'seconds' => 3600, // 60 minutes
+            'cost' => 0,
+            'grouped_type' => 'project',
+            'grouped_data' => [
+                [
+                    'key' => $project->getKey(),
+                    'seconds' => 3600, // 60 minutes
+                    'cost' => 0,
+                    'grouped_type' => null,
+                    'grouped_data' => null,
+                ],
+            ],
+        ], $result);
+    }
+
+    public function test_aggregate_time_entries_by_week_keys_each_group_by_the_first_day_of_the_week(): void
+    {
+        // Arrange
+        // 2026-07-20 is a Monday, 2026-07-26 is the Sunday of that week.
+        foreach (['2026-07-20', '2026-07-26', '2026-07-27'] as $day) {
+            TimeEntry::factory()->startWithDuration(Carbon::parse($day.' 09:00:00', 'UTC'), 10)->create();
+        }
+        $query = TimeEntry::query();
+
+        // Act
+        $result = $this->service->getAggregatedTimeEntries(
+            $query,
+            TimeEntryAggregationType::Week,
+            null,
+            'UTC',
+            Weekday::Monday,
+            false,
+            null,
+            null,
+            true,
+            null,
+            null
+        );
+
+        // Assert
+        $this->assertSame([
+            'seconds' => 30,
+            'cost' => 0,
+            'grouped_type' => 'week',
+            'grouped_data' => [
+                [
+                    'key' => '2026-07-20',
+                    'seconds' => 20,
+                    'cost' => 0,
+                    'grouped_type' => null,
+                    'grouped_data' => null,
+                ],
+                [
+                    'key' => '2026-07-27',
+                    'seconds' => 10,
+                    'cost' => 0,
+                    'grouped_type' => null,
+                    'grouped_data' => null,
+                ],
+            ],
+        ], $result);
+    }
+
+    public function test_aggregate_time_entries_by_week_aligns_the_group_key_to_the_organization_week_start(): void
+    {
+        // Arrange
+        // With a Sunday week start the Sunday entry belongs to the following week instead.
+        foreach (['2026-07-20', '2026-07-26', '2026-07-27'] as $day) {
+            TimeEntry::factory()->startWithDuration(Carbon::parse($day.' 09:00:00', 'UTC'), 10)->create();
+        }
+        $query = TimeEntry::query();
+
+        // Act
+        $result = $this->service->getAggregatedTimeEntries(
+            $query,
+            TimeEntryAggregationType::Week,
+            null,
+            'UTC',
+            Weekday::Sunday,
+            false,
+            null,
+            null,
+            true,
+            null,
+            null
+        );
+
+        // Assert
+        $this->assertSame(['2026-07-19', '2026-07-26'], array_column($result['grouped_data'], 'key'));
+        $this->assertSame([10, 20], array_column($result['grouped_data'], 'seconds'));
+    }
+
+    public function test_aggregate_time_entries_by_week_keys_a_week_spanning_new_year_by_its_start_in_the_earlier_year(): void
+    {
+        // Arrange
+        // Note: 2025-12-29 is the Monday of the week containing 1 January 2026
+        foreach (['2025-12-29', '2025-12-31', '2026-01-01', '2026-01-05'] as $day) {
+            TimeEntry::factory()->startWithDuration(Carbon::parse($day.' 09:00:00', 'UTC'), 10)->create();
+        }
+        $query = TimeEntry::query();
+
+        // Act
+        $result = $this->service->getAggregatedTimeEntries(
+            $query,
+            TimeEntryAggregationType::Week,
+            null,
+            'UTC',
+            Weekday::Monday,
+            false,
+            null,
+            null,
+            true,
+            null,
+            null
+        );
+
+        // Assert
+        $this->assertSame(['2025-12-29', '2026-01-05'], array_column($result['grouped_data'], 'key'));
+        // Three of the four entries fall in the week that straddles new year.
+        $this->assertSame([30, 10], array_column($result['grouped_data'], 'seconds'));
+    }
+
+    public function test_aggregate_time_entries_by_day_with_filled_gaps_uses_the_offset_of_each_entry_when_range_spans_a_daylight_saving_time_change(): void
+    {
+        // Arrange
+        // Note: "Now" is in winter time (UTC+1), the first entry is in summer time (UTC+2). DST ended on 2026-10-25.
+        $this->travelTo(Carbon::create(2026, 11, 4, 12, 0, 0, 'Europe/Vienna'));
+        // 2026-10-01 00:30 in Europe/Vienna (UTC+2)
+        TimeEntry::factory()->startWithDuration(Carbon::create(2026, 9, 30, 22, 30, 0, 'UTC'), 10)->create();
+        // 2026-10-31 23:30 in Europe/Vienna (UTC+1)
+        TimeEntry::factory()->startWithDuration(Carbon::create(2026, 10, 31, 22, 30, 0, 'UTC'), 20)->create();
+        $query = TimeEntry::query();
+
+        // Act
+        $result = $this->service->getAggregatedTimeEntries(
+            $query,
+            TimeEntryAggregationType::Day,
+            null,
+            'Europe/Vienna',
+            Weekday::Monday,
+            true,
+            Carbon::create(2026, 9, 30, 22, 0, 0, 'UTC'),
+            Carbon::create(2026, 10, 31, 22, 59, 59, 'UTC'),
+            true,
+            null,
+            null
+        );
+
+        // Assert
+        $this->assertCount(31, $result['grouped_data']);
+        $this->assertSame('2026-10-01', $result['grouped_data'][0]['key']);
+        $this->assertSame(10, $result['grouped_data'][0]['seconds']);
+        $this->assertSame('2026-10-31', $result['grouped_data'][30]['key']);
+        $this->assertSame(20, $result['grouped_data'][30]['seconds']);
+        $this->assertSame(30, array_sum(array_column($result['grouped_data'], 'seconds')));
+        Log::assertNotLogged(fn (LogEntry $log) => $log->level === 'error');
+    }
+
+    public function test_aggregate_time_entries_by_week_uses_the_offset_of_each_entry_when_range_spans_a_daylight_saving_time_change(): void
+    {
+        // Arrange
+        $this->travelTo(Carbon::create(2026, 11, 4, 12, 0, 0, 'Europe/Vienna'));
+        // Monday 2026-10-19 00:30 in Europe/Vienna (UTC+2), belongs to the week of 2026-10-19
+        TimeEntry::factory()->startWithDuration(Carbon::create(2026, 10, 18, 22, 30, 0, 'UTC'), 10)->create();
+        $query = TimeEntry::query();
+
+        // Act
+        $result = $this->service->getAggregatedTimeEntries(
+            $query,
+            TimeEntryAggregationType::Week,
+            null,
+            'Europe/Vienna',
+            Weekday::Monday,
+            false,
+            null,
+            null,
+            true,
+            null,
+            null
+        );
+
+        // Assert
+        $this->assertSame(['2026-10-19'], array_column($result['grouped_data'], 'key'));
     }
 }

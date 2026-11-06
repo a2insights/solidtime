@@ -51,8 +51,6 @@ class TaskController extends Controller
     /**
      * Get tasks
      *
-     * @return TaskCollection<TaskResource>
-     *
      * @throws AuthorizationException
      *
      * @operationId getTasks
@@ -82,7 +80,10 @@ class TaskController extends Controller
             $query->whereNull('done_at');
         }
 
-        $tasks = $query->paginate(config('app.pagination_per_page_default'));
+        $tasks = $query
+            ->orderBy('created_at', 'desc')
+            ->orderBy('id')
+            ->paginate(config('app.pagination_per_page_default'));
 
         return new TaskCollection($tasks);
     }

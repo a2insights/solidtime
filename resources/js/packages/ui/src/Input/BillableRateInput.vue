@@ -7,32 +7,40 @@ import {
     NumberFieldDecrement,
     NumberFieldIncrement,
     NumberFieldInput,
-} from '@/Components/ui/number-field';
+} from '..';
+import UpgradeLockedField from './UpgradeLockedField.vue';
+import { useBillableRatesLock } from '../utils/useBillableRatesLock';
 
 const props = defineProps<{
     name: string;
     focus?: boolean;
     currency: string;
+    disabled?: boolean;
 }>();
 
 const model = defineModel<number | null>({
     default: null,
 });
 
+const { locked } = useBillableRatesLock();
+
 const billableRateInput = ref<HTMLInputElement | null>(null);
 useFocus(billableRateInput, { initialValue: props.focus });
 
 function formatValue(modelValue: number | null) {
-    return modelValue ? modelValue / 100 : 0;
+    return modelValue ? modelValue / 100 : null;
 }
 </script>
 
 <template>
     <div class="relative">
+        <UpgradeLockedField v-if="locked" />
         <NumberField
+            v-else
             :id="name"
             ref="billableRateInput"
             :model-value="formatValue(model)"
+            :disabled="disabled"
             :step-snapping="false"
             class="block w-full"
             :format-options="{
@@ -41,7 +49,7 @@ function formatValue(modelValue: number | null) {
                 currencyDisplay: 'code',
                 currencySign: 'accounting',
             }"
-            @update:model-value="(value) => (model = value * 100)">
+            @update:model-value="(value) => (model = value ? value * 100 : null)">
             <NumberFieldContent>
                 <NumberFieldDecrement />
                 <NumberFieldInput placeholder="Billable Rate" />
